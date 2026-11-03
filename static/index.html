@@ -74,7 +74,7 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="c"><h2>Typical day <select id="mon" style="width:auto;display:inline"></select></h2><div class="ch"><canvas id="c3"></canvas></div></div>
 <div class="c"><h2>Cumulative cash flow (₱)</h2><div class="ch"><canvas id="c2"></canvas></div></div>
 <div class="c"><h2>Protection &amp; wire</h2><table id="prot"></table><p class="note">Wire = larger of voltage-drop and breaker-ampacity size (approximate derated values). Verify against PEC / NEC 690; a licensed engineer must approve.</p></div>
-<div class="c"><h2>Bill of materials</h2><table id="bom"></table><p class="note">Prices are itemized PH market retail estimates. Compare vendor quotes and confirm ratings against the protection table above.</p></div>
+<div class="c"><h2>Bill of materials</h2><table id="bom"></table><p class="note" id="bomNote"></p></div>
 <div class="c"><h2>Draft layout: single-line</h2><div style="overflow-x:auto"><svg id="sld" width="900" height="330"></svg></div></div>
 <div class="c"><h2>Draft layout: array</h2><div style="overflow-x:auto" id="arr"></div></div>
 <div class="c"><ul class="note" id="notes"></ul></div>
@@ -103,7 +103,7 @@ const brk=(a,s)=>s.find(x=>x>=a)||Math.ceil(a/10)*10;
 const CON=[[15,15.8,"½″ (15 mm)"],[20,21,"¾″ (20 mm)"],[25,26.6,"1″ (25 mm)"],[32,35,"1¼″ (32 mm)"],[40,40.9,"1½″ (40 mm)"],[50,52.5,"2″ (50 mm)"],[65,62.7,"2½″ (65 mm)"],[80,77.9,"3″ (80 mm)"]];
 function conduit(mm,n){const od=1.4*Math.sqrt(mm)+3.5,id=od*Math.sqrt((n+1)/0.4);return(CON.find(c=>c[1]>=id)||CON[7])[2]}
 
-function design(s){
+function design(s,U){
  const iSc=num("iSc",13.8),vmp=num("vmp",41.5),voc=num("voc",49.5),maxV=num("maxDcV",500),pvD=num("pvD",25),batD=num("batD",3),acD=num("acD",8),dp=num("drop",2),mpptMin=num("mpptMin",120),mppts=Math.max(1,Math.round(num("mppts",2))),maxPvA=num("maxPvA",25);
  const lowT=numz("lowT",15),roofT=numz("roofT",45),inT=numz("inT",35),vf=vocF(lowT),VL=$("bldg").value==="other"?1000:600,tfR=tf90(roofT),tfI=tf90(inT),maxFuse=num("maxFuse",25),sf=brk(iSc*1.56,[10,12,15,20,25,30,32,40]);
  const bat=s.battery_kwh>0,grid=s.topology!=="off-grid",exp=s.topology==="grid-tied"||s.topology==="hybrid-export",zero=s.topology==="hybrid-no-export";
@@ -120,35 +120,38 @@ function design(s){
  const run=(len,w,n)=>({len:m(len*1.1),sz:conduit(w.mm,n)});
  const cP=run(pvD,pvW,2),cB=bat?run(batD,bW,2):null,cA=run(acD,aW,3);
 
- // Itemized BOM Calculations
- const sysKw = panels * s.panel_watts / 1000;
- const panelCost = sysKw * 1000 * 7.5;
- const invCost = iv * 8500;
- const batCost = BP ? BP.inst * 8500 : 0;
- const rQty = m(panels * 2.26 / 4.2), hQty = m(panels * 1.5), cQty = panels * 2;
-
- const L = [
-  ["Solar PV modules", `${s.panel_watts} W mono, ${strings} string(s) × ${series}`, `${panels} pcs`, php(panelCost)],
-  ["Mounting rails", '4.2 m aluminum', `${rQty} pcs`, php(rQty * 650)],
-  ["Roof hooks / feet", "stainless, with sealant", `${hQty} pcs`, php(hQty * 120)],
-  ["Mid / end clamps", 'module clamps', `${(panels-rows)*2} / ${rows*4} pcs`, php(cQty * 45)],
-  ["Inverter", `${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit", php(invCost)]
+ // Itemized BOM (materials only: labor, engineering & permitting are excluded). Prices come from the API.
+ const sysKw=panels*s.panel_watts/1000,rQty=m(panels*2.26/4.2),hQty=m(panels*1.5),endC=rows*4,midC=Math.max(0,panels-rows)*2;
+ const pvCab=pvD*2,acCab=acD*3,btCab=bat?batD*2:0,pu=n=>php(n),pm=n=>php(n)+"/m";
+ const bomGroups=[
+  ["Generation",[
+   ["Solar PV modules",`${s.panel_watts} W mono, ${strings} string(s) × ${series}`,`${panels} pcs`,pu(s.panel_watts*U.panel_per_watt)+"/pc",panels*s.panel_watts*U.panel_per_watt]]],
+  ["Power conversion & storage",[
+   ["Inverter",`${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit",pu(U.inverter_per_kw)+"/kW",iv*U.inverter_per_kw],
+   ...(BP?[["Battery storage",`${BP.M.v} V LiFePO4 module, ${BP.inst.toFixed(2)} kWh total`,`${BP.qty} unit(s)`,pu(U.bat_kwh)+"/kWh",BP.inst*U.bat_kwh]]:[])]],
+  ["Mounting",[
+   ["Mounting rails","4.2 m aluminum",`${rQty} pcs`,pu(U.rail_4_2m),rQty*U.rail_4_2m],
+   ["Roof hooks / feet","stainless, with sealant",`${hQty} pcs`,pu(U.roof_hook),hQty*U.roof_hook],
+   ["Mid clamps","between modules",`${midC} pcs`,pu(U.clamp),midC*U.clamp],
+   ["End clamps","row ends",`${endC} pcs`,pu(U.clamp),endC*U.clamp]]],
+  ["Protection",[
+   ["PV DC breaker / isolator",`${pvB} A DC`,"1 pc",pu(U.prot_pv_dc_breaker),U.prot_pv_dc_breaker],
+   ["AC breaker",`${aB} A AC`,"1 pc",pu(U.prot_ac_breaker),U.prot_ac_breaker],
+   ["DC surge protector (SPD)","Type 2, PV side","1 pc",pu(U.prot_spd_dc),U.prot_spd_dc],
+   ["AC surge protector (SPD)","Type 2, AC side","1 pc",pu(U.prot_spd_ac),U.prot_spd_ac],
+   ["Enclosure & busbars",strings>1?"Combiner box / MDB, DIN rail, busbars":"Junction box / MDB, DIN rail, busbars","1 lot",pu(U.prot_enclosure_misc),U.prot_enclosure_misc]]],
+  ["Cables",[
+   ["PV DC cable",`${pvW.t}, UV-rated, twin run`,`${pvCab} m`,pm(U.pv_cable_per_m),pvCab*U.pv_cable_per_m],
+   ["AC cable (THHN)",`${aW.t}, L+N+G`,`${acCab} m`,pm(U.ac_cable_per_m),acCab*U.ac_cable_per_m],
+   ...(bat?[["Battery cable",`${bW.t}, flexible, pos+neg`,`${btCab} m`,pm(U.bat_cable_per_m),btCab*U.bat_cable_per_m]]:[])]],
+  ["Conduit, grounding & misc.",[
+   ["Conduit & fittings",`PV ${cP.sz} × ${cP.len} m, AC ${cA.sz} × ${cA.len} m`,"1 lot",pu(U.conduit_fittings),U.conduit_fittings],
+   ["Grounding kit","ground rod, clamp, bare copper","1 lot",pu(U.grounding_kit),U.grounding_kit],
+   ["Lugs, glands, ties, labels","incl. MC4 connector pairs","1 lot",pu(U.lugs_glands_ties),U.lugs_glands_ties]]]
  ];
+ const L=bomGroups,bomTotal=L.reduce((a,g)=>a+g[1].reduce((b,r)=>b+r[4],0),0);
 
- if(bat) L.push(["Battery storage",`${BP.M.v} V LiFePO4, ${BP.inst.toFixed(2)} kWh`,`${BP.qty} unit(s)`, php(batCost)]);
-
- L.push(
-  ["DC & AC Protection", "Combiner box, Breakers, SPDs, Isolators", "1 lot", php(6500)],
-  ["Cablings & Conduits", "UV DC Cable, THHN AC Wire, Conduit Runs", "1 lot", php(pvD * 90 + acD * 255 + 4700)],
-  ["Standard Installation Labor", "Mechanical roof mounting, electrical wiring, & commissioning", "1 job", php(sysKw * 3500)],
-  ["Engineering (PEE Sign & Seal)", "PEE review, signed single-line diagram, & structural clearance", "1 job", php(15000)]
- );
-
- if(exp) {
-  L.push(["Net Metering Processing Fee", "DU DIS, yellow card, meter calibration, & filing paperwork", "1 job", php(12000)]);
- }
-
- return{warns,V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn:[...bn],panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*vf*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}
+ return{rows,bomTotal,warns,V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn:[...bn],panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*vf*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}
 }
 
 function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
@@ -168,7 +171,7 @@ function arr(d){const pw=num("panL",2.28),ph=num("panW",1.13),per=Math.min(d.ser
  for(let s=0;s<d.strings;s++)for(let p=0;p<d.series;p++){const r=s*wraps+Math.floor(p/per),c=p%per;h+=`<rect x="${10+c*pw*k}" y="${10+r*ph*k}" width="${pw*k-2}" height="${ph*k-2}" fill="${cols[s%6]}" opacity=".85"/>`}
  $("arr").innerHTML=h}
 
-const QO={"Mid / end clamps":"solar panel mid clamp end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","MC4 connectors":"MC4 solar connector pair"};
+const QO={"Mid clamps":"solar panel mid clamp","End clamps":"solar panel end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","Lugs, glands, ties, labels":"cable lug gland cable tie assortment","PV DC cable":"4mm2 solar PV cable","AC cable (THHN)":"THHN wire","Battery cable":"flexible battery cable 25mm2","Grounding kit":"grounding rod kit","Conduit & fittings":"PVC conduit fittings"};
 function qry(r){return QO[r[0]]||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim()}
 function buy(r){const q=encodeURIComponent(qry(r));const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;return a("https://shopee.ph/search?keyword=","Shopee")+" · "+a("https://www.lazada.com.ph/catalog/?q=","Lazada")}
 
@@ -218,8 +221,8 @@ async function post(b){let r,d;
  try{d=await r.json()}catch(e){throw new Error("Server error")}
  if(!r.ok)throw new Error("Request failed ("+r.status+"): "+(typeof d.detail==="string"?d.detail:JSON.stringify(d.detail||d)));d._req=b;return d}
 
-async function reconcile(d){for(let i=0;i<3;i++){const s=d.summary,x=design(s),bm=x.bat&&Math.abs(x.instKwh-s.battery_kwh)>0.005;if(x.panels===s.panel_count&&!bm)break;
- const b2={...d._req,system_kw:x.panels*s.panel_watts/1000};if(x.bat)b2.battery_kwh=x.instKwh;
+async function reconcile(d){for(let i=0;i<3;i++){const s=d.summary,x=design(s,d.assumptions.unit_prices),bm=x.bat&&Math.abs(x.instKwh-s.battery_kwh)>0.005;const rm=d._req.array_rows!==x.rows;if(x.panels===s.panel_count&&!bm&&!rm)break;
+ const b2={...d._req,system_kw:x.panels*s.panel_watts/1000,array_rows:x.rows};if(x.bat)b2.battery_kwh=x.instKwh;
  const n=await post(b2);d=n}return d}
 
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
@@ -227,7 +230,7 @@ function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(
  charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},...(D.summary.battery_kwh>0?[{label:"Battery SOC %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"}]:[])]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{display:D.summary.battery_kwh>0,position:"right",min:0,max:100}}}})
 }
 
-function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
+function render(d){D=d;const s=d.summary,x=design(s,d.assumptions.unit_prices);LASTX=x;
  $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW","Inverter"],[s.battery_kwh>0?s.battery_kwh+" kWh":"None","Battery"],[s.solar_coverage_pct+"%","Solar Coverage"],[php(s.year1_savings_php),"Year-1 Savings"],[php(s.total_cost_php),"Total Cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
  charts.forEach(c=>c&&c.destroy());const m=d.monthly,lb=m.map(r=>r.month);
  charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
@@ -235,8 +238,11 @@ function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
  $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
  table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC Output",x.aB+" A AC",x.aW.t,x.cA.sz]]);
  
- // Itemized BOM Output Table Rendering
- table("bom", ["Item", "Specification", "Qty", "Est. Market Cost", "Where to buy"], x.L.map(r => [r[0], r[1], r[2], r[3], buy(r)]));
+ // Itemized BOM table, grouped by category, materials only
+ $("bom").innerHTML="<tr><th>Item</th><th>Specification</th><th>Qty</th><th>Unit price</th><th>Cost</th><th>Where to buy</th></tr>"+
+  x.L.map(g=>`<tr><th colspan="6" style="background:var(--bx);color:var(--tx)">${g[0]}</th></tr>`+g[1].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${php(r[4])}</td><td>${buy(r)}</td></tr>`).join("")).join("")+
+  `<tr><td colspan="4"><b>BOM subtotal (materials)</b></td><td colspan="2"><b>${php(x.bomTotal)}</b></td></tr>`;
+ $("bomNote").textContent=`Materials only. Installation labor, PEE sign & seal, and net-metering/permitting fees (est. ${php(s.services_php)}) are not in this BOM but are still counted in Total Cost and payback. Prices are PH market retail estimates; compare vendor quotes.`;
  sld(x);arr(x);
  $("out").hidden=false;layoutRoof()
 }
@@ -245,6 +251,6 @@ $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
  for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","battery_cutoff_pct","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
- b.pv_run_m=num("pvD",25);b.ac_run_m=num("acD",8);
+ b.pv_run_m=num("pvD",25);b.bat_run_m=num("batD",3);b.ac_run_m=num("acD",8);
  $("go").disabled=true;try{let d=await post(b);d=await reconcile(d);render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>

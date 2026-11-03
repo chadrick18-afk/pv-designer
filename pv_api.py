@@ -39,9 +39,17 @@ UNIT_PRICES = {
     "pv_cable_per_m": 45,            # ₱45/m for twin 4-6mm² DC solar cable
     "ac_cable_per_m": 85,            # ₱85/m for THHN AC feeder wire
     "bat_cable_per_m": 350,          # ₱350/m for 25-50mm² flexible battery cable
-    "protection_lot": 6500,          # Base AC/DC breakers, SPDs, combiner/MDB enclosures
-    "conduit_and_grounding": 4700,   # Base conduit runs, fittings, ground rod kit
-    
+    # Protection (itemized, PHP each)
+    "prot_pv_dc_breaker": 1800,      # PV DC breaker / isolator
+    "prot_ac_breaker": 900,          # AC breaker
+    "prot_spd_dc": 1300,             # DC surge protective device
+    "prot_spd_ac": 1100,             # AC surge protective device
+    "prot_enclosure_misc": 1400,     # Combiner / MDB enclosure, busbars, DIN rail
+    # Conduit & grounding (itemized, PHP lot each)
+    "conduit_fittings": 2200,        # Conduit pipe, elbows, couplings, clips
+    "grounding_kit": 1500,           # Ground rod, clamp, bare copper
+    "lugs_glands_ties": 1000,        # Lugs, glands, cable ties, labels, MC4 pairs
+
     # Separated Services & Soft Costs
     "standard_labor_per_kw": 3500,   # Mechanical & electrical installation labor rate per kWp
     "pee_sign_and_seal": 15000,      # Professional Electrical Engineer (PEE) Sign & Seal
@@ -115,6 +123,8 @@ class SimRequest(BaseModel):
     years: int = Field(25, ge=1, le=40)
     pv_run_m: float = Field(25, ge=0, le=500, description="array to inverter cable run (m)")
     ac_run_m: float = Field(8, ge=0, le=500, description="inverter to breaker panel AC run (m)")
+    bat_run_m: float = Field(3, ge=0, le=100, description="battery to inverter cable run (m)")
+    array_rows: Optional[int] = Field(None, ge=1, le=500, description="panel rows in the layout (for clamp counts)")
 
     @model_validator(mode="after")
     def need_consumption(self):
@@ -313,25 +323,37 @@ def simulate(req: SimRequest):
     gen = sum(r["gen"] for r in rows)
     onsite = sum(r["direct"] + r["discharge"] for r in rows)
 
-    # Itemized Market BOM Costing Logic
-    p_kw = kw
-    cost_panels = p_kw * 1000 * UNIT_PRICES["panel_per_watt"]
-    cost_inverter = inv_kw * UNIT_PRICES["inverter_per_kw"]
-    cost_battery = bat * UNIT_PRICES["bat_kwh"]
-    
+    # Itemized materials (BOM). Labor, engineering and permitting are kept OUT of the BOM.
+    U = UNIT_PRICES
+    cost_panels = kw * 1000 * U["panel_per_watt"]
+    cost_inverter = inv_kw * U["inverter_per_kw"]
+    cost_battery = bat * U["bat_kwh"]
+
+    rows_ = req.array_rows or ceil(panels / 12)
     rails_qty = ceil(panels * 2.26 / 4.2)
     hooks_qty = ceil(panels * 1.5)
-    clamps_qty = panels * 2
-    cost_mounting = (rails_qty * UNIT_PRICES["rail_4_2m"]) + (hooks_qty * UNIT_PRICES["roof_hook"]) + (clamps_qty * UNIT_PRICES["clamp"])
-    cost_electrical = UNIT_PRICES["protection_lot"] + UNIT_PRICES["conduit_and_grounding"] + (req.pv_run_m * 2 * UNIT_PRICES["pv_cable_per_m"]) + (req.ac_run_m * 3 * UNIT_PRICES["ac_cable_per_m"])
+    mid_qty = max(0, panels - rows_) * 2
+    end_qty = rows_ * 4
+    cost_mounting = (rails_qty * U["rail_4_2m"] + hooks_qty * U["roof_hook"]
+                     + (mid_qty + end_qty) * U["clamp"])
 
-    # Separated Labor & Fees
-    cost_labor = p_kw * UNIT_PRICES["standard_labor_per_kw"]
-    cost_pee = UNIT_PRICES["pee_sign_and_seal"]
-    cost_net_metering = UNIT_PRICES["net_metering_fee"] if req.topology in ["grid-tied", "hybrid-export"] else 0.0
+    cost_protection = (U["prot_pv_dc_breaker"] + U["prot_ac_breaker"] + U["prot_spd_dc"]
+                       + U["prot_spd_ac"] + U["prot_enclosure_misc"])
+    cost_conduit_ground = U["conduit_fittings"] + U["grounding_kit"] + U["lugs_glands_ties"]
+    cost_cables = (req.pv_run_m * 2 * U["pv_cable_per_m"] + req.ac_run_m * 3 * U["ac_cable_per_m"]
+                   + (req.bat_run_m * 2 * U["bat_cable_per_m"] if bat > 0 else 0.0))
+    cost_electrical = cost_protection + cost_conduit_ground + cost_cables
 
-    # Financial Aggregations
-    pv_cost = cost_panels + cost_inverter + cost_mounting + cost_electrical + cost_labor + cost_pee + cost_net_metering
+    bom_materials = cost_panels + cost_inverter + cost_battery + cost_mounting + cost_electrical
+
+    # Services & fees (NOT in the BOM, but still part of project cost / payback)
+    cost_labor = kw * U["standard_labor_per_kw"]
+    cost_pee = U["pee_sign_and_seal"]
+    cost_net_metering = U["net_metering_fee"] if req.topology in ["grid-tied", "hybrid-export"] else 0.0
+    services = cost_labor + cost_pee + cost_net_metering
+
+    # Financial aggregations
+    pv_cost = bom_materials - cost_battery + services
     total = pv_cost + cost_battery
     flows, pay = cash_flow(y1, pv_cost, total, req)
 
@@ -344,13 +366,14 @@ def simulate(req: SimRequest):
             "unserved_kwh": round(sum(r["unserved"] for r in rows)),
             "stress_unserved_kwh": stress_kwh, "stress_unserved_pct": stress_pct,
             "year1_savings_php": round(y1), "pv_cost_php": round(pv_cost),
-            "battery_cost_php": round(cost_battery), "total_cost_php": round(total),
+            "battery_cost_php": round(cost_battery), "bom_materials_php": round(bom_materials),
+            "services_php": round(services), "total_cost_php": round(total),
             "payback_years": round(pay, 1) if pay is not None else None,
             "net_gain_over_horizon_php": flows[-1]["cumulative_php"],
         },
         "monthly": rows, "typical_day": day, "cash_flow": flows,
         "assumptions": {"monthly_kwh": round(monthly_kwh, 1), "retail_rate": retail, "export_rate": exp_rate,
-                        "yield_source": src, "notes": notes},
+                        "yield_source": src, "notes": notes, "unit_prices": UNIT_PRICES},
     }
 
 
