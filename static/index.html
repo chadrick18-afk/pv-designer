@@ -49,6 +49,12 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="r"><label>Tilt (°)<input id="tilt" type="number" value="15"></label><label>Azimuth (180 = S)<input id="azimuth" type="number" value="180"></label>
 <label>₱ per kW<input id="cost_per_kw_php" type="number" value="45000"></label><label>₱ per battery kWh<input id="battery_cost_per_kwh_php" type="number" value="30000"></label>
 <label>Tariff growth %/yr<input id="tariff_escalation_pct" type="number" step="any" value="3"></label><label>Target offset<input id="target_offset" type="number" step="0.05" value="0.8"></label></div></details>
+<details><summary>Design method &amp; code margins</summary>
+<label>Sizing method<select id="method"><option value="sim">Hourly simulation (default)</option><option value="nc2">NC II-style classroom method</option></select></label>
+<div class="r"><label>Lowest ambient (°C)<input id="lowT" type="number" step="any" value="15"></label><label>Roof / conduit ambient (°C)<input id="roofT" type="number" step="any" value="45"></label>
+<label>Indoor ambient (°C)<input id="inT" type="number" step="any" value="35"></label><label>Module max series fuse (A)<input id="maxFuse" type="number" step="any" value="25"></label></div>
+<label>Building<select id="bldg"><option value="dwelling">One/two-family dwelling (600 V max)</option><option value="other">Other building (1000 V max)</option></select></label>
+<p class="note" style="margin:6px 0">Classroom method: array = daily kWh × 1.3 ÷ peak sun hours; battery = daily kWh × autonomy ÷ (usable × 0.85); inverter = connected load × 1.25. The code margins above apply to both methods.</p></details>
 <button id="go">Design &amp; simulate</button><div class="err" id="err"></div>
 </form>
 <div><div class="c"><h2>Location &amp; roof layout</h2>
@@ -83,26 +89,35 @@ function initMap(){if(typeof L==="undefined"){$("map").style.display="none";retu
  ["lat","lon"].forEach(id=>$(id).addEventListener("change",()=>{const a=parseFloat($("lat").value),b=parseFloat($("lon").value);if(isFinite(a)&&isFinite(b))k.setLatLng([a,b])}))}
 try{initMap()}catch(e){$("map").style.display="none"}
 // ---- hardware sizing ----
-const WIRES=[[2.5,"14 AWG",20],[4,"12 AWG",28],[6,"10 AWG",36],[10,"8 AWG",50],[16,"6 AWG",68],[25,"4 AWG",90],[35,"2 AWG",110],[50,"1/0 AWG",135],[70,"2/0 AWG",170],[95,"3/0 AWG",205],[120,"4/0 AWG",235]];
+// NEC Table 310.15(B)(16)-style copper ampacities [mm², nearest AWG, 75°C col, 90°C col]. Confirm against your cable maker's table.
+const WIRES=[[2.5,"14 AWG",20,25],[4,"12 AWG",25,30],[6,"10 AWG",35,40],[10,"8 AWG",50,55],[16,"6 AWG",65,75],[25,"4 AWG",85,95],[35,"2 AWG",115,130],[50,"1/0 AWG",150,170],[70,"2/0 AWG",175,195],[95,"3/0 AWG",200,225],[120,"4/0 AWG",230,260]];
+const vocF=t=>t>=20?1.02:t>=15?1.04:t>=10?1.06:t>=5?1.08:t>=0?1.10:t>=-5?1.12:t>=-10?1.14:t>=-15?1.16:t>=-20?1.18:t>=-25?1.20:t>=-30?1.21:t>=-35?1.23:1.25;
+const tf90=t=>t<=25?1.04:t<=30?1:t<=35?.96:t<=40?.91:t<=45?.87:t<=50?.82:t<=55?.76:t<=60?.71:t<=65?.65:.58;
+function numz(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)?v:d}
 const area=(i,len,v,dp)=>len*2*i*0.021/(v*dp/100);
-function wire(a,amps){for(const w of WIRES)if(w[0]>=a&&w[2]>=amps)return{mm:w[0],t:`${w[0]} mm² (${w[1]})`};return{mm:Math.max(a,120),t:`${Math.ceil(Math.max(a,120))}+ mm² (engineer to size)`}}
+// vd = min mm² for voltage drop; i125 = current the 75°C terminals must carry; iAfter = current after derating; brkA = its breaker; tf = temp factor
+function wire(vd,i125,iAfter,brkA,tf){for(const[a,awg,a75,a90]of WIRES){const c=a90*tf;if(a>=vd&&a75>=i125&&c>=iAfter&&c>=brkA)return{mm:a,t:`${a.toFixed(1)} mm² (${awg})`}}return{mm:Math.max(vd,120),t:`${Math.ceil(Math.max(vd,120))}+ mm² (engineer to size)`}}
 const brk=(a,s)=>s.find(x=>x>=a)||Math.ceil(a/10)*10;
 const CON=[[15,15.8,"½″ (15 mm)"],[20,21,"¾″ (20 mm)"],[25,26.6,"1″ (25 mm)"],[32,35,"1¼″ (32 mm)"],[40,40.9,"1½″ (40 mm)"],[50,52.5,"2″ (50 mm)"],[65,62.7,"2½″ (65 mm)"],[80,77.9,"3″ (80 mm)"]];
 function conduit(mm,n){const od=1.4*Math.sqrt(mm)+3.5,id=od*Math.sqrt((n+1)/0.4);return(CON.find(c=>c[1]>=id)||CON[7])[2]}
 function design(s){
  const iSc=num("iSc",13.8),vmp=num("vmp",41.5),voc=num("voc",49.5),maxV=num("maxDcV",500),pvD=num("pvD",25),batD=num("batD",3),acD=num("acD",8),dp=num("drop",2);
+ const lowT=numz("lowT",15),roofT=numz("roofT",45),inT=numz("inT",35),vf=vocF(lowT),VL=$("bldg").value==="other"?1000:600,tfR=tf90(roofT),tfI=tf90(inT),maxFuse=num("maxFuse",25),sf=brk(iSc*1.56,[10,12,15,20,25,30,32,40]);
  const bat=s.battery_kwh>0,grid=s.topology!=="off-grid",exp=s.topology==="grid-tied"||s.topology==="hybrid-export",zero=s.topology==="hybrid-no-export";
- const maxS=Math.max(1,Math.floor(maxV/(voc*1.12))),strings=Math.ceil(s.panel_count/maxS),series=Math.ceil(s.panel_count/strings),panels=strings*series;
+ const maxS=Math.max(1,Math.floor(Math.min(maxV,VL)/(voc*vf))),strings=Math.ceil(s.panel_count/maxS),series=Math.ceil(s.panel_count/strings),panels=strings*series;
  const Vs=vmp*series,Isc=iSc*strings,iv=s.inverter_kw;
- const pvB=brk(Isc*1.56,[10,15,20,25,30,40,50,63,80,100,125]),pvW=wire(area(Isc*1.25,pvD,Vs,dp),pvB);
+ const pvB=brk(Isc*1.56,[10,15,20,25,30,40,50,63,80,100,125]),pvW=wire(area(Isc*1.25,pvD,Vs,dp),Isc*1.5625,Isc*1.25,pvB,tfR);
  let BP=null,bn=[];if(bat){BP=pickBattery(s.battery_kwh,iv);
   bn.push(`Battery: ${BP.qty} × ${BP.M.n} → ${BP.inst.toFixed(2)} kWh installed on a ${BP.V} V bus (${BP.ser} in series × ${BP.par} in parallel)`);
   if(BP.V<48&&iv>3)bn.push(`A ${BP.V} V battery bus for a ${iv} kW inverter means very high DC current; a 48 V system is strongly preferred`);
   if(BP.par>4)bn.push(`${BP.par} strings in parallel: confirm the battery maker's parallel limit, or use a higher-voltage or larger module`);
   if(BP.V<48&&maxV>150)bn.push(`${BP.V} V inverters and charge controllers usually accept only about 100–150 V of PV; set the inverter max PV voltage field to match`);
   if(BP.M.lead)bn.push("Lead-acid: 50% cutoff and about 80% round-trip efficiency were used. Expect a shorter life than LiFePO4, plus ventilation and maintenance")}
- const bV=BP?BP.V:48,bI=iv*1000/bV*1.25,bB=bat?brk(bI,[40,50,63,80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,bV,dp),bB):null;
- const aI=iv*1000/230*1.25,aB=brk(aI,[15,20,30,40,50,60,80,100,125]),aW=wire(area(aI/1.25,acD,230,dp),aB);
+ const bV=BP?BP.V:48,bI=iv*1000/bV*1.25,bB=bat?brk(bI,[40,50,63,80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,bV,dp),bI,bI/1.25,bB,tfI):null;
+ const aI=iv*1000/230*1.25,aB=brk(aI,[15,20,30,40,50,60,80,100,125]),aW=wire(area(aI/1.25,acD,230,dp),aI,aI/1.25,aB,tfI);
+ const cn=[`Code margins (PEC 2017, which follows NEC 2017 Art. 690; numbered 6.90 in the PEC): PV max current = Isc × 1.25; conductors and overcurrent devices at 125% of that (Isc × 1.56); wire also checked after temperature derating (factor ${tfR} at ${roofT} °C roof/conduit, ${tfI} at ${inT} °C indoors) and against 75 °C terminal ampacity. Battery and AC circuits use 125% of inverter current`,
+  `Voltage: V<sub>oc</sub> × ${vf} for a ${lowT} °C lowest ambient (NEC Table 690.7(A), crystalline silicon). Series limit ${Math.min(maxV,VL)} V (${VL===600?"one- and two-family dwelling":"other building"})`];
+ if(strings>=3)cn.push(`3+ parallel strings: use ${sf} A string fuses`+(sf>maxFuse?`. This EXCEEDS the module's ${maxFuse} A max series fuse rating, so use fewer strings per combiner or other modules`:""));
  const rows=Math.ceil(strings*Math.ceil(series/12)),m=n=>Math.ceil(n);
  const run=(len,w,n)=>({len:m(len*1.1),sz:conduit(w.mm,n)});
  const cP=run(pvD,pvW,2),cB=bat?run(batD,bW,2):null,cA=run(acD,aW,3);
@@ -111,7 +126,7 @@ function design(s){
  ["Mid / end clamps",'module clamps',`${(panels-rows)*2} / ${rows*4} pcs`],
  ["Inverter",`${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit"],
  ["PV cable",`${pvW.t}, UV, red + black`,`${m(pvD*2+(strings>1?strings*20:0))} m`],["MC4 connectors","IP67 pairs",`${strings*2+4} pairs`],
- [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
+ [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", "+sf+" A string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
  ["DC isolator / breaker",`${pvB} A, 1000 V DC`,"1 unit"],["DC surge protector","Type 2, 1000 V DC","1 unit"]];
  if(bat)L.push(["Battery storage",`${BP.M.v} V ${BP.M.lead?"lead-acid":"LiFePO4"} ${BP.M.ah} Ah, ${BP.M.kwh} kWh each; ${BP.V} V bus; set inverter low-battery cutoff to match`,`${BP.qty} unit(s) (${BP.ser}S${BP.par}P)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
   ["Battery cable",`${bW.t}, flexible, red + black`,`${m(batD*2)} m`],["Battery lugs & busbar","tinned copper, heat-shrink","1 lot"]);
@@ -125,7 +140,7 @@ function design(s){
  L.push(["Conduit: AC run",`${cA.sz} PVC/EMT, 3 m lengths`,`${m(cA.len/3)} pcs`],
   ["Conduit fittings","elbows, couplings, adapters, pull boxes",`${m((cP.len+(cB?cB.len:0)+cA.len)/3)*2} pcs`],["Conduit clamps / saddles","spaced ~1 m",`${m(cP.len+(cB?cB.len:0)+cA.len)} pcs`],
   ["Ground rod + clamp","5/8″ × 2.4 m copper-bonded","1 set"],["Ground wire","6 mm² green/yellow",`${m(pvD+acD+6)} m`],["Cable glands, ties, labels","UV ties, warning signs, labels","1 lot"]);
- return{V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn,panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
+ return{V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn:[...cn,...bn],panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*vf*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
 // ---- drawings ----
 function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
 const ln=(a,b,c,d,t,tx,ty)=>`<path class="ln" d="M${a} ${b}L${c} ${d}"/>${t?`<text x="${tx}" y="${ty}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${t}</text>`:""}`;
@@ -196,6 +211,14 @@ function pickBattery(kwh,iv){
  else{M=[MODS[2],MODS[3],MODS[4]].map(m=>({m,inst:Math.ceil(kwh/m.kwh)*m.kwh})).sort((a,b)=>a.inst-b.inst||b.m.kwh-a.m.kwh)[0].m}
  const V=M.v>40?48:M.v>20?24:(iv<=1?12:iv<=3?24:48),ser=M.v>20?1:Math.round(V/12),par=Math.max(1,Math.ceil(kwh/(M.kwh*ser)));
  return{M,V,ser,par,qty:par*ser,inst:par*ser*M.kwh}}
+async function post(b){const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}),d=await r.json();
+ if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):"Request failed");return d}
+async function nc2(b,d0,ap){
+ const s0=d0.summary,daily=d0.assumptions.monthly_kwh*12/365,psh=s0.specific_yield_kwh_per_kwp/365/0.86,kw=daily*1.3/psh,cut=(b.battery_cutoff_pct??20)/100,b2={...b,system_kw:+kw.toFixed(2)},conn=ap.reduce((t,a)=>t+a.watts*a.qty,0)/1000;
+ if(b.topology!=="grid-tied"&&b.battery_kwh===undefined)b2.battery_kwh=+(daily*(b.autonomy_days||1)/((1-cut)*0.85)).toFixed(1);
+ b2.inverter_kw=b.topology==="grid-tied"?+kw.toFixed(2):conn>0?+(conn*1.25).toFixed(2):s0.inverter_kw;
+ const d=await post(b2);
+ d.assumptions.notes.unshift(`Method: NC II-style classroom sizing. Array = ${daily.toFixed(1)} kWh/day × 1.3 ÷ ${psh.toFixed(2)} peak sun hours (from PVGIS yield) = ${kw.toFixed(2)} kW; battery = daily kWh × autonomy ÷ (usable × 0.85); inverter = connected load × 1.25 (grid-tied: array rating). Not checked against the official TESDA handout`);return d}
 // ---- render ----
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
 function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
@@ -216,6 +239,5 @@ $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textConte
  if(b.monthly_kwh&&b.monthly_bill)delete b.monthly_bill;
  const ap=APP.filter(a=>a.watts>0&&a.hours>0).map(a=>({name:a.name,watts:a.watts,qty:Math.max(1,Math.round(a.qty)||1),hours:Math.min(24,a.hours),start:Math.max(0,Math.min(23,Math.round(a.start)||0)),surge:Math.max(1,a.surge||1)}));if(ap.length)b.appliances=ap;
  const bm=$("batMod").value;if(bm!=="auto"&&MODS[+bm].lead)b.battery_roundtrip_eff=0.8;
- $("go").disabled=true;try{const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}),d=await r.json();
-  if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):"Request failed");render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
+ $("go").disabled=true;try{let d=await post(b);if($("method").value==="nc2")d=await nc2(b,d,ap);render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>
