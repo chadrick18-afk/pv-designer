@@ -14,7 +14,7 @@ main{max-width:1200px;margin:auto;padding:16px}h1{font-size:21px;margin:0 0 12px
 .c{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:14px;margin-bottom:14px}
 label{display:block;font-size:12px;color:var(--mu);margin:8px 0 2px}
 input,select{width:100%;padding:6px 8px;border:1px solid var(--ln);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
-.r{display:grid;grid-template-columns:1fr 1fr;gap:8px}#map{height:210px;border-radius:8px;margin-top:8px}
+.r{display:grid;grid-template-columns:1fr 1fr;gap:8px}#map{height:400px;border-radius:8px}.tools{display:flex;gap:6px;flex-wrap:wrap;align-items:end;margin-top:6px}.tools label{width:98px;margin:4px 0 0}.tools button{width:auto;margin:4px 0 0;padding:6px 12px;font-size:13px}
 details{margin-top:10px}summary{cursor:pointer;color:var(--mu)}
 button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--ac);color:#111;font:600 15px inherit;cursor:pointer}
 .st{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-bottom:14px}
@@ -33,7 +33,6 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="r"><label>Monthly kWh<input id="monthly_kwh" type="number" value="550"></label><label>or bill (₱)<input id="monthly_bill" type="number"></label></div>
 <div class="r"><label>Battery kWh (blank = auto)<input id="battery_kwh" type="number" step="any"></label><label>Autonomy (days)<input id="autonomy_days" type="number" value="1" step="any"></label></div>
 <div class="r"><label>Latitude<input id="lat" type="number" step="any" value="14.5995"></label><label>Longitude<input id="lon" type="number" step="any" value="120.9842"></label></div>
-<div id="map"></div>
 <details><summary>Panel &amp; wiring</summary>
 <div class="r"><label>Panel W<input id="panel_watts" type="number" value="450"></label><label>I<sub>sc</sub> (A)<input id="iSc" type="number" step="any" value="13.8"></label>
 <label>V<sub>mp</sub> (V)<input id="vmp" type="number" step="any" value="41.5"></label><label>V<sub>oc</sub> (V)<input id="voc" type="number" step="any" value="49.5"></label></div>
@@ -46,6 +45,13 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <label>Tariff growth %/yr<input id="tariff_escalation_pct" type="number" step="any" value="3"></label><label>Target offset<input id="target_offset" type="number" step="0.05" value="0.8"></label></div></details>
 <button id="go">Design &amp; simulate</button><div class="err" id="err"></div>
 </form>
+<div><div class="c"><h2>Location &amp; roof layout</h2>
+<p class="note" style="margin:0 0 8px">Drag the pin onto your house (this sets the sun data). Then press Draw roof, click the roof corners on the satellite image, and press Finish. The panels from your design are laid out inside the outline.</p>
+<div id="map"></div>
+<div class="tools"><label>Panel L (m)<input id="panL" type="number" step="any" value="2.28"></label><label>Panel W (m)<input id="panW" type="number" step="any" value="1.13"></label>
+<label>Orientation<select id="panOr"><option value="l">Landscape</option><option value="p">Portrait</option></select></label><label>Setback (m)<input id="setback" type="number" step="any" value="0.3"></label><label>Angle ± (°)<input id="roofAng" type="number" step="any" value="0"></label></div>
+<div class="tools"><button type="button" onclick="startRoof()">Draw roof</button><button type="button" onclick="finishRoof()">Finish</button><button type="button" onclick="clearRoof()">Clear</button></div>
+<p class="note" id="roofSt"></p></div>
 <section id="out" hidden>
 <div class="st" id="st"></div>
 <div class="c"><h2>Monthly energy (kWh)</h2><div class="ch"><canvas id="c1"></canvas></div></div>
@@ -56,17 +62,19 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="c"><h2>Draft layout: single-line</h2><div style="overflow-x:auto"><svg id="sld" width="900" height="330"></svg></div></div>
 <div class="c"><h2>Draft layout: array</h2><div style="overflow-x:auto" id="arr"></div></div>
 <div class="c"><ul class="note" id="notes"></ul></div>
-</section></div></main>
+</section></div></div></main>
 <script>
 const $=id=>document.getElementById(id);let charts=[],D=null;
 function num(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)&&v>0?v:d}
 const php=n=>"₱"+Math.round(n).toLocaleString("en-PH");
 // ---- map (optional) ----
+let MAP=null,MARK=null,BASE=null,LG=null,LASTX=null,drawing=false,VERT=[],ROOF=[];
 function initMap(){if(typeof L==="undefined"){$("map").style.display="none";return}
- const m=L.map("map").setView([14.6,121],6);const osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}),sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles © Esri"});osm.addTo(m);L.control.layers({Street:osm,Satellite:sat}).addTo(m);
- const k=L.marker([14.5995,120.9842],{draggable:true}).addTo(m);
+ const m=MAP=L.map("map").setView([14.6,121],6);const osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}),sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:20,maxNativeZoom:18,attribution:"Tiles © Esri"});BASE={osm,sat};osm.addTo(m);LG=L.layerGroup().addTo(m);L.control.layers({Street:osm,Satellite:sat}).addTo(m);
+ const k=MARK=L.marker([14.5995,120.9842],{draggable:true}).addTo(m);
  const mv=p=>{$("lat").value=p.lat.toFixed(4);$("lon").value=p.lng.toFixed(4)};
- k.on("dragend",e=>mv(e.target.getLatLng()));m.on("click",e=>{k.setLatLng(e.latlng);mv(e.latlng)})}
+ k.on("dragend",e=>mv(e.target.getLatLng()));m.on("click",e=>{if(drawing)return addVert(e.latlng);k.setLatLng(e.latlng);mv(e.latlng)});
+ ["lat","lon"].forEach(id=>$(id).addEventListener("change",()=>{const a=parseFloat($("lat").value),b=parseFloat($("lon").value);if(isFinite(a)&&isFinite(b))k.setLatLng([a,b])}))}
 try{initMap()}catch(e){$("map").style.display="none"}
 // ---- hardware sizing ----
 const WIRES=[[2.5,"14 AWG",20],[4,"12 AWG",28],[6,"10 AWG",36],[10,"8 AWG",50],[16,"6 AWG",68],[25,"4 AWG",90],[35,"2 AWG",110],[50,"1/0 AWG",135],[70,"2/0 AWG",170],[95,"3/0 AWG",205],[120,"4/0 AWG",235]];
@@ -105,7 +113,7 @@ function design(s){
  L.push(["Conduit: AC run",`${cA.sz} PVC/EMT, 3 m lengths`,`${m(cA.len/3)} pcs`],
   ["Conduit fittings","elbows, couplings, adapters, pull boxes",`${m((cP.len+(cB?cB.len:0)+cA.len)/3)*2} pcs`],["Conduit clamps / saddles","spaced ~1 m",`${m(cP.len+(cB?cB.len:0)+cA.len)} pcs`],
   ["Ground rod + clamp","5/8″ × 2.4 m copper-bonded","1 set"],["Ground wire","6 mm² green/yellow",`${m(pvD+acD+6)} m`],["Cable glands, ties, labels","UV ties, warning signs, labels","1 lot"]);
- return{batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
+ return{panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
 // ---- drawings ----
 function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
 const ln=(a,b,c,d,t,tx,ty)=>`<path class="ln" d="M${a} ${b}L${c} ${d}"/>${t?`<text x="${tx}" y="${ty}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${t}</text>`:""}`;
@@ -120,7 +128,7 @@ function sld(d){let h="",y=95,x=10;
  else h+=ln(815,155,815,215)+box(745,215,140,40,"Generator ATS","");
  h+=`<text x="10" y="300" style="font-size:10px;fill:var(--mu)">Draft, not to scale. Ground all frames, rails, enclosures and inverter to the ground rod. Conduit: array ${d.cP.sz}, AC ${d.cA.sz}${d.cB?", battery "+d.cB.sz:""}.</text>`;
  $("sld").innerHTML=h}
-function arr(d){const pw=2.28,ph=1.13,per=Math.min(d.series,12),wraps=Math.ceil(d.series/per),k=Math.min(18,780/(per*pw)),rows=d.strings*wraps,W=per*pw*k+20,H=rows*ph*k+40,cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
+function arr(d){const pw=num("panL",2.28),ph=num("panW",1.13),per=Math.min(d.series,12),wraps=Math.ceil(d.series/per),k=Math.min(18,780/(per*pw)),rows=d.strings*wraps,W=per*pw*k+20,H=rows*ph*k+40,cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
  let h=`<svg width="${W}" height="${H}">`;
  for(let s=0;s<d.strings;s++)for(let p=0;p<d.series;p++){const r=s*wraps+Math.floor(p/per),c=p%per;h+=`<rect x="${10+c*pw*k}" y="${10+r*ph*k}" width="${pw*k-2}" height="${ph*k-2}" fill="${cols[s%6]}" opacity=".85"/>`}
  for(let s=0;s<d.strings;s++)h+=`<text x="${W-8}" y="${10+s*wraps*ph*k+ph*k/2+4}" text-anchor="end" style="fill:#fff;font-size:10px">S${s+1}</text>`;
@@ -133,11 +141,37 @@ function qry(r){const n=(r[1].match(/^[\d.]+/)||[""])[0],A=r[1].split(" ")[0]+"A
 function buy(r){const q=encodeURIComponent(qry(r)||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim());
  const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;
  return a("https://shopee.ph/search?keyword=","Shopee")+" · "+a("https://www.lazada.com.ph/catalog/?q=","Lazada")+" · "+a("https://www.google.com/search?q=","Google")}
+// ---- roof drawing & panel placement (plan view, local metres) ----
+function addVert(ll){VERT.push(ll);LG.clearLayers();L.polyline(VERT,{color:"#f59e0b",dashArray:"4"}).addTo(LG);VERT.forEach(v=>L.circleMarker(v,{radius:4,color:"#f59e0b"}).addTo(LG));$("roofSt").textContent=VERT.length+" corner(s). Click more corners, then press Finish."}
+function startRoof(){if(!MAP)return;drawing=true;VERT=[];ROOF=[];LG.clearLayers();MAP.removeLayer(BASE.osm);BASE.sat.addTo(MAP);MAP.setView(MARK.getLatLng(),19);$("roofSt").textContent="Click the roof corners on the satellite image, then press Finish."}
+function finishRoof(){if(VERT.length<3){$("roofSt").textContent="Need at least 3 corners.";return}drawing=false;ROOF=VERT.slice();VERT=[];layoutRoof()}
+function clearRoof(){drawing=false;VERT=[];ROOF=[];if(LG)LG.clearLayers();$("roofSt").textContent=""}
+const kk=la=>[111320*Math.cos(la*Math.PI/180),110574];
+function pip(p,P){let c=false;for(let i=0,j=P.length-1;i<P.length;j=i++){const a=P[i],b=P[j];if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])c=!c}return c}
+function dseg(p,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],l=dx*dx+dy*dy;let t=l?((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l:0;t=Math.max(0,Math.min(1,t));return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy)}
+const inside=(p,P,sb)=>pip(p,P)&&P.every((a,i)=>dseg(p,a,P[(i+1)%P.length])>=sb);
+function layoutRoof(){
+ if(!LG||ROOF.length<3)return;LG.clearLayers();
+ L.polygon(ROOF,{color:"#f59e0b",weight:2,dashArray:"5",fill:false}).addTo(LG);
+ if(!LASTX){$("roofSt").textContent="Roof outlined. Run Design & simulate to place panels.";return}
+ const o=ROOF[0],k=kk(o.lat),P=ROOF.map(p=>[(p.lng-o.lng)*k[0],(p.lat-o.lat)*k[1]]);
+ let best=0,ang=0;P.forEach((a,i)=>{const b=P[(i+1)%P.length],l=Math.hypot(b[0]-a[0],b[1]-a[1]);if(l>best){best=l;ang=Math.atan2(b[1]-a[1],b[0]-a[0])}});
+ ang+=(parseFloat($("roofAng").value)||0)*Math.PI/180;
+ const c=Math.cos(ang),s=Math.sin(ang),rot=p=>[p[0]*c+p[1]*s,-p[0]*s+p[1]*c],unrot=q=>[q[0]*c-q[1]*s,q[0]*s+q[1]*c],R=P.map(rot);
+ const xs=R.map(p=>p[0]),ys=R.map(p=>p[1]),x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+ const Lp=num("panL",2.28),Wp=num("panW",1.13),land=$("panOr").value!=="p",w=land?Lp:Wp,h=land?Wp:Lp,gap=0.02,sb=parseFloat($("setback").value)||0;
+ const cand=[];
+ for(let y=y0+sb;y+h<=y1-sb+1e-6;y+=h+gap)for(let x=x0+sb;x+w<=x1-sb+1e-6;x+=w+gap){const q=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];if(q.every(p=>inside(p,R,sb)))cand.push(q)}
+ const N=LASTX.panels,use=cand.slice(0,N),cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
+ use.forEach((q,i)=>L.polygon(q.map(p=>{const u=unrot(p);return[o.lat+u[1]/k[1],o.lng+u[0]/k[0]]}),{color:"#fff",weight:1,fillColor:cols[Math.floor(i/LASTX.series)%6],fillOpacity:.75}).addTo(LG));
+ let A=0;P.forEach((a,i)=>{const b=P[(i+1)%P.length];A+=a[0]*b[1]-b[0]*a[1]});A=Math.abs(A)/2;
+ $("roofSt").textContent=`Roof ≈ ${A.toFixed(0)} m². ${use.length} of ${N} panels fit.`+(use.length<N?` This roof holds at most ${cand.length} panels (≈ ${(cand.length*(LASTX.panelW||0)/1000).toFixed(1)} kWp). Draw a larger area, reduce setback, or lower the target offset.`:" Colors show strings.")+" Plan view: on a pitched roof, panels are slightly shorter along the slope."}
+document.addEventListener("change",e=>{if(e.target.closest&&e.target.closest(".tools"))layoutRoof()});
 // ---- render ----
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
 function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
  charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},{label:"Battery %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{position:"right",min:0,max:100,grid:{drawOnChartArea:false}}}}})}
-function render(d){D=d;const s=d.summary,x=design(s);
+function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
  $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW","Inverter"],[s.battery_kwh+" kWh","Battery"],[s.solar_coverage_pct+"%","Load from solar"],[php(s.year1_savings_php),"Year-1 savings"],[php(s.total_cost_php),"Total cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
  charts.forEach(c=>c&&c.destroy());const m=d.monthly,lb=m.map(r=>r.month);
  charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Curtailed","curtail","#9ca3af"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
@@ -145,7 +179,7 @@ function render(d){D=d;const s=d.summary,x=design(s);
  $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
  table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC (array → inverter)",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC (inverter → panel)",x.aB+" A AC",x.aW.t,x.cA.sz]]);
  table("bom",["Item","Specification","Qty","Where to buy"],x.L.map(r=>[...r,buy(r)]));sld(x);arr(x);
- $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false}
+ $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false;layoutRoof()}
 $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
