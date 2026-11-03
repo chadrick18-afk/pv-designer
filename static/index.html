@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PV Designer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mu:#5d6672;--ln:#dde1e6;--ac:#d97706;--bx:#eef2f7;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1e2329;--tx:#e8eaed;--mu:#9aa4b0;--ln:#2f363e;--ac:#f59e0b;--bx:#262d35;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,sans-serif}
+main{max-width:1200px;margin:auto;padding:16px}h1{font-size:21px;margin:0 0 12px}h2{font-size:15px;margin:0 0 8px}
+.g{display:grid;grid-template-columns:330px 1fr;gap:14px}@media(max-width:860px){.g{grid-template-columns:1fr}}
+.c{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--mu);margin:8px 0 2px}
+input,select{width:100%;padding:6px 8px;border:1px solid var(--ln);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
+.r{display:grid;grid-template-columns:1fr 1fr;gap:8px}#map{height:150px;border-radius:8px;margin-top:8px}
+details{margin-top:10px}summary{cursor:pointer;color:var(--mu)}
+button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--ac);color:#111;font:600 15px inherit;cursor:pointer}
+.st{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-bottom:14px}
+.s{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:10px}.s b{display:block;font-size:18px}.s span{font-size:11px;color:var(--mu)}
+.ch{height:250px;position:relative}table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:5px 6px;border-bottom:1px solid var(--ln);text-align:left}th{color:var(--mu);font-weight:600}
+.note{color:var(--mu);font-size:12px;margin:4px 0 0;padding-left:16px}.err{color:#dc2626;margin-top:8px}
+svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}.ln{stroke:var(--mu);stroke-width:1.5;fill:none}
+</style></head><body><main>
+<h1>PV Designer</h1>
+<div class="g">
+<form class="c" id="f">
+<label>System type<select id="topology"><option value="hybrid-no-export">Hybrid, zero export</option><option value="hybrid-export">Hybrid, export</option><option value="grid-tied">Grid-tied (net metering)</option><option value="off-grid">Off-grid</option></select></label>
+<div class="r"><label>Utility<select id="du_provider"><option value="meralco">Meralco</option><option value="veco">VECO</option><option value="dlpc">DLPC</option><option value="generic_coop">Generic coop</option></select></label>
+<label>Load profile<select id="load_profile"><option value="aircon_day">Daytime aircon</option><option value="evening_peak">Evening peak</option><option value="flat">Flat</option></select></label></div>
+<div class="r"><label>Monthly kWh<input id="monthly_kwh" type="number" value="550"></label><label>or bill (₱)<input id="monthly_bill" type="number"></label></div>
+<div class="r"><label>Battery kWh (blank = auto)<input id="battery_kwh" type="number" step="any"></label><label>Autonomy (days)<input id="autonomy_days" type="number" value="1" step="any"></label></div>
+<div class="r"><label>Latitude<input id="lat" type="number" step="any" value="14.5995"></label><label>Longitude<input id="lon" type="number" step="any" value="120.9842"></label></div>
+<div id="map"></div>
+<details><summary>Panel &amp; wiring</summary>
+<div class="r"><label>Panel W<input id="panel_watts" type="number" value="450"></label><label>I<sub>sc</sub> (A)<input id="iSc" type="number" step="any" value="13.8"></label>
+<label>V<sub>mp</sub> (V)<input id="vmp" type="number" step="any" value="41.5"></label><label>V<sub>oc</sub> (V)<input id="voc" type="number" step="any" value="49.5"></label></div>
+<label>Inverter max PV voltage (V)<input id="maxDcV" type="number" value="500"></label>
+<div class="r"><label>Array → inverter (m)<input id="pvD" type="number" value="25"></label><label>Battery → inverter (m)<input id="batD" type="number" value="3"></label>
+<label>Inverter → panel (m)<input id="acD" type="number" value="8"></label><label>Max V-drop (%)<input id="drop" type="number" step="0.5" value="2"></label></div></details>
+<details><summary>Roof &amp; costs</summary>
+<div class="r"><label>Tilt (°)<input id="tilt" type="number" value="15"></label><label>Azimuth (180 = S)<input id="azimuth" type="number" value="180"></label>
+<label>₱ per kW<input id="cost_per_kw_php" type="number" value="45000"></label><label>₱ per battery kWh<input id="battery_cost_per_kwh_php" type="number" value="30000"></label>
+<label>Tariff growth %/yr<input id="tariff_escalation_pct" type="number" step="any" value="3"></label><label>Target offset<input id="target_offset" type="number" step="0.05" value="0.8"></label></div></details>
+<button id="go">Design &amp; simulate</button><div class="err" id="err"></div>
+</form>
+<section id="out" hidden>
+<div class="st" id="st"></div>
+<div class="c"><h2>Monthly energy (kWh)</h2><div class="ch"><canvas id="c1"></canvas></div></div>
+<div class="c"><h2>Typical day <select id="mon" style="width:auto;display:inline"></select></h2><div class="ch"><canvas id="c3"></canvas></div></div>
+<div class="c"><h2>Cumulative cash flow (₱)</h2><div class="ch"><canvas id="c2"></canvas></div></div>
+<div class="c"><h2>Protection &amp; wire</h2><table id="prot"></table><p class="note">Wire = larger of voltage-drop and breaker-ampacity size (approximate derated values). Verify against PEC / NEC 690; a licensed engineer must approve.</p></div>
+<div class="c"><h2>Bill of materials</h2><table id="bom"></table></div>
+<div class="c"><h2>Draft layout: single-line</h2><div style="overflow-x:auto"><svg id="sld" width="900" height="330"></svg></div></div>
+<div class="c"><h2>Draft layout: array</h2><div style="overflow-x:auto" id="arr"></div></div>
+<div class="c"><ul class="note" id="notes"></ul></div>
+</section></div></main>
+<script>
+const $=id=>document.getElementById(id);let charts=[],D=null;
+function num(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)&&v>0?v:d}
+const php=n=>"₱"+Math.round(n).toLocaleString("en-PH");
+// ---- map (optional) ----
+function initMap(){if(typeof L==="undefined"){$("map").style.display="none";return}
+ const m=L.map("map").setView([14.6,121],6);L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19}).addTo(m);
+ const k=L.marker([14.5995,120.9842],{draggable:true}).addTo(m);
+ const mv=p=>{$("lat").value=p.lat.toFixed(4);$("lon").value=p.lng.toFixed(4)};
+ k.on("dragend",e=>mv(e.target.getLatLng()));m.on("click",e=>{k.setLatLng(e.latlng);mv(e.latlng)})}
+try{initMap()}catch(e){$("map").style.display="none"}
+// ---- hardware sizing ----
+const WIRES=[[2.5,"14 AWG",20],[4,"12 AWG",28],[6,"10 AWG",36],[10,"8 AWG",50],[16,"6 AWG",68],[25,"4 AWG",90],[35,"2 AWG",110],[50,"1/0 AWG",135],[70,"2/0 AWG",170],[95,"3/0 AWG",205],[120,"4/0 AWG",235]];
+const area=(i,len,v,dp)=>len*2*i*0.021/(v*dp/100);
+function wire(a,amps){for(const w of WIRES)if(w[0]>=a&&w[2]>=amps)return{mm:w[0],t:`${w[0]} mm² (${w[1]})`};return{mm:Math.max(a,120),t:`${Math.ceil(Math.max(a,120))}+ mm² (engineer to size)`}}
+const brk=(a,s)=>s.find(x=>x>=a)||Math.ceil(a/10)*10;
+const CON=[[15,15.8,"½″ (15 mm)"],[20,21,"¾″ (20 mm)"],[25,26.6,"1″ (25 mm)"],[32,35,"1¼″ (32 mm)"],[40,40.9,"1½″ (40 mm)"],[50,52.5,"2″ (50 mm)"],[65,62.7,"2½″ (65 mm)"],[80,77.9,"3″ (80 mm)"]];
+function conduit(mm,n){const od=1.4*Math.sqrt(mm)+3.5,id=od*Math.sqrt((n+1)/0.4);return(CON.find(c=>c[1]>=id)||CON[7])[2]}
+function design(s){
+ const iSc=num("iSc",13.8),vmp=num("vmp",41.5),voc=num("voc",49.5),maxV=num("maxDcV",500),pvD=num("pvD",25),batD=num("batD",3),acD=num("acD",8),dp=num("drop",2);
+ const bat=s.battery_kwh>0,grid=s.topology!=="off-grid",exp=s.topology==="grid-tied"||s.topology==="hybrid-export",zero=s.topology==="hybrid-no-export";
+ const maxS=Math.max(1,Math.floor(maxV/(voc*1.12))),strings=Math.ceil(s.panel_count/maxS),series=Math.ceil(s.panel_count/strings),panels=strings*series;
+ const Vs=vmp*series,Isc=iSc*strings,iv=s.inverter_kw;
+ const pvB=brk(Isc*1.56,[10,15,20,25,30,40,50,63,80,100,125]),pvW=wire(area(Isc*1.25,pvD,Vs,dp),pvB);
+ const bI=iv*1000/48*1.25,bB=bat?brk(bI,[80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,48,dp),bB):null;
+ const aI=iv*1000/230*1.25,aB=brk(aI,[15,20,30,40,50,60,80,100,125]),aW=wire(area(aI/1.25,acD,230,dp),aB);
+ const rows=Math.ceil(strings*Math.ceil(series/12)),m=n=>Math.ceil(n);
+ const run=(len,w,n)=>({len:m(len*1.1),sz:conduit(w.mm,n)});
+ const cP=run(pvD,pvW,2),cB=bat?run(batD,bW,2):null,cA=run(acD,aW,3);
+ const L=[["Solar PV modules",`${s.panel_watts} W mono, ${strings} string(s) × ${series}`,`${panels} pcs`],
+ ["Mounting rails",'4.2 m aluminum',`${m(panels*2.26/4.2)} pcs`],["Roof hooks / feet","stainless, with sealant",`${m(panels*1.5)} pcs`],
+ ["Mid / end clamps",'module clamps',`${(panels-rows)*2} / ${rows*4} pcs`],
+ ["Inverter",`${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit"],
+ ["PV cable",`${pvW.t}, UV, red + black`,`${m(pvD*2+(strings>1?strings*20:0))} m`],["MC4 connectors","IP67 pairs",`${strings*2+4} pairs`],
+ [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
+ ["DC isolator / breaker",`${pvB} A, 1000 V DC`,"1 unit"],["DC surge protector","Type 2, 1000 V DC","1 unit"]];
+ if(bat)L.push(["Battery storage","48 V LiFePO4, 5.12 kWh modules",`${m(s.battery_kwh/5.12)} unit(s)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
+  ["Battery cable",`${bW.t}, flexible, red + black`,`${m(batD*2)} m`],["Battery lugs & busbar","tinned copper, heat-shrink","1 lot"]);
+ L.push(["AC breaker",`${aB} A, 2-pole 230 V`,"1 unit"],["AC surge protector","Type 2, 230 V","1 unit"],["AC cable",`${aW.t}, L + N + PE`,`${m(acD*3)} m`],
+  ["Breaker box (MDB)",`surface/flush, ≥ 8-way, with ${aB} A main`,"1 unit"]);
+ if(grid)L.push(["Utility box",exp?"Interconnection / meter-side box, space for utility bi-directional meter":"Interconnection box with service disconnect","1 unit"]);
+ if(zero)L.push(["Zero-export CT sensor","100 A split-core","1 set"]);
+ if(!grid)L.push(["Generator ATS","auto transfer switch","1 unit"]);
+ L.push(["Conduit: array run",`${cP.sz} PVC/EMT, 3 m lengths`,`${m(cP.len/3)} pcs`]);
+ if(bat)L.push(["Conduit: battery run",`${cB.sz} PVC/EMT, 3 m lengths`,`${m(cB.len/3)} pcs`]);
+ L.push(["Conduit: AC run",`${cA.sz} PVC/EMT, 3 m lengths`,`${m(cA.len/3)} pcs`],
+  ["Conduit fittings","elbows, couplings, adapters, pull boxes",`${m((cP.len+(cB?cB.len:0)+cA.len)/3)*2} pcs`],["Conduit clamps / saddles","spaced ~1 m",`${m(cP.len+(cB?cB.len:0)+cA.len)} pcs`],
+  ["Ground rod + clamp","5/8″ × 2.4 m copper-bonded","1 set"],["Ground wire","6 mm² green/yellow",`${m(pvD+acD+6)} m`],["Cable glands, ties, labels","UV ties, warning signs, labels","1 lot"]);
+ return{batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
+// ---- drawings ----
+function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
+const ln=(a,b,c,d,t,tx,ty)=>`<path class="ln" d="M${a} ${b}L${c} ${d}"/>${t?`<text x="${tx}" y="${ty}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${t}</text>`:""}`;
+function sld(d){let h="",y=95,x=10;
+ h+=box(x,y,120,60,"PV array",`${d.strings}×${d.series} panels`)+ln(130,125,175,125,d.pvW.t.split(" ")[0]+" mm²",152,115);
+ h+=box(175,y,110,60,d.strings>1?"Combiner box":"Junction box",d.strings>1?"string fuses":"IP65")+ln(285,125,325,125);
+ h+=box(325,y,100,60,"DC isolator",d.pvB+" A")+ln(425,125,465,125);
+ h+=box(465,y,110,60,"Inverter",d.iv+" kW");
+ if(d.bat){h+=ln(520,155,520,215,d.bW.t.split(" ")[0]+" mm²",562,190)+box(465,215,110,50,"Battery","48 V, "+d.batKwh+" kWh")+box(330,220,100,40,"Batt. breaker",d.bB+" A")+ln(430,240,465,240)}
+ {h+=ln(575,125,615,125)+box(615,y,100,60,"AC breaker + SPD",d.aB+" A")+ln(715,125,745,125)+box(745,y,140,60,"Breaker box (MDB)","loads")}
+ if(d.grid){h+=ln(815,95,815,55)+box(745,15,140,40,"Utility box / meter",d.exp?"bi-directional":"service disconnect")+ln(815,15,815,5,"")}
+ else h+=ln(815,155,815,215)+box(745,215,140,40,"Generator ATS","");
+ h+=`<text x="10" y="300" style="font-size:10px;fill:var(--mu)">Draft, not to scale. Ground all frames, rails, enclosures and inverter to the ground rod. Conduit: array ${d.cP.sz}, AC ${d.cA.sz}${d.cB?", battery "+d.cB.sz:""}.</text>`;
+ $("sld").innerHTML=h}
+function arr(d){const pw=2.28,ph=1.13,per=Math.min(d.series,12),wraps=Math.ceil(d.series/per),k=Math.min(18,780/(per*pw)),rows=d.strings*wraps,W=per*pw*k+20,H=rows*ph*k+40,cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
+ let h=`<svg width="${W}" height="${H}">`;
+ for(let s=0;s<d.strings;s++)for(let p=0;p<d.series;p++){const r=s*wraps+Math.floor(p/per),c=p%per;h+=`<rect x="${10+c*pw*k}" y="${10+r*ph*k}" width="${pw*k-2}" height="${ph*k-2}" fill="${cols[s%6]}" opacity=".85"/>`}
+ for(let s=0;s<d.strings;s++)h+=`<text x="${W-8}" y="${10+s*wraps*ph*k+ph*k/2+4}" text-anchor="end" style="fill:#fff;font-size:10px">S${s+1}</text>`;
+ h+=`<text x="10" y="${H-8}" style="font-size:10px;fill:var(--mu)">≈ ${(per*pw).toFixed(1)} m × ${(rows*ph).toFixed(1)} m, ${(d.panels*pw*ph).toFixed(0)} m² of modules (landscape ${pw}×${ph} m). Add ~0.3 m setback and walkway. Draft, not to scale.</text></svg>`;$("arr").innerHTML=h}
+// ---- render ----
+function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
+function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
+ charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},{label:"Battery %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{position:"right",min:0,max:100,grid:{drawOnChartArea:false}}}}})}
+function render(d){D=d;const s=d.summary,x=design(s);
+ $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW","Inverter"],[s.battery_kwh+" kWh","Battery"],[s.solar_coverage_pct+"%","Load from solar"],[php(s.year1_savings_php),"Year-1 savings"],[php(s.total_cost_php),"Total cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
+ charts.forEach(c=>c&&c.destroy());const m=d.monthly,lb=m.map(r=>r.month);
+ charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Curtailed","curtail","#9ca3af"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
+ charts[1]=new Chart($("c2"),{type:"line",data:{labels:d.cash_flow.map(r=>r.year),datasets:[{label:"Cumulative ₱",data:d.cash_flow.map(r=>r.cumulative_php),borderColor:"#2563eb",backgroundColor:"#2563eb33",fill:true,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false}});
+ $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
+ table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC (array → inverter)",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC (inverter → panel)",x.aB+" A AC",x.aW.t,x.cA.sz]]);
+ table("bom",["Item","Specification","Qty"],x.L);sld(x);arr(x);
+ $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false}
+$("mon").addEventListener("change",day);
+$("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
+ for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
+ for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
+ if(b.monthly_kwh&&b.monthly_bill)delete b.monthly_bill;
+ $("go").disabled=true;try{const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}),d=await r.json();
+  if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):"Request failed");render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
+</script></body></html>
