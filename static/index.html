@@ -50,7 +50,7 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <label>Inverter → panel (m)<input id="acD" type="number" value="8"></label><label>Max V-drop (%)<input id="drop" type="number" step="0.5" value="2"></label></div></details>
 <details><summary>Roof &amp; costs</summary>
 <div class="r"><label>Tilt (°)<input id="tilt" type="number" value="15"></label><label>Azimuth (180 = S)<input id="azimuth" type="number" value="180"></label>
-<label>₱ per kW<input id="cost_per_kw_php" type="number" value="45000"></label><label>₱ per battery kWh<input id="battery_cost_per_kwh_php" type="number" value="30000"></label>
+<label>₱ per kW (Turnkey)<input id="cost_per_kw_php" type="number" value="65000"></label><label>₱ per battery kWh<input id="battery_cost_per_kwh_php" type="number" value="22000"></label>
 <label>Tariff growth %/yr<input id="tariff_escalation_pct" type="number" step="any" value="3"></label><label>Target offset<input id="target_offset" type="number" step="0.05" value="0.8"></label></div></details>
 <details><summary>Design method &amp; code margins</summary>
 <label>Sizing method<select id="method"><option value="sim">Hourly simulation (default)</option><option value="nc2">NC II-style classroom method</option></select></label>
@@ -74,7 +74,7 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="c"><h2>Typical day <select id="mon" style="width:auto;display:inline"></select></h2><div class="ch"><canvas id="c3"></canvas></div></div>
 <div class="c"><h2>Cumulative cash flow (₱)</h2><div class="ch"><canvas id="c2"></canvas></div></div>
 <div class="c"><h2>Protection &amp; wire</h2><table id="prot"></table><p class="note">Wire = larger of voltage-drop and breaker-ampacity size (approximate derated values). Verify against PEC / NEC 690; a licensed engineer must approve.</p></div>
-<div class="c"><h2>Bill of materials</h2><table id="bom"></table><p class="note">Buy links are searches, not specific products. Panels, inverters, batteries, and protection devices should come from an authorized dealer with warranty and proper certification. Compare prices and confirm ratings against the table above.</p></div>
+<div class="c"><h2>Bill of materials</h2><table id="bom"></table><p class="note">Prices are itemized PH market retail estimates. Compare vendor quotes and confirm ratings against the protection table above.</p></div>
 <div class="c"><h2>Draft layout: single-line</h2><div style="overflow-x:auto"><svg id="sld" width="900" height="330"></svg></div></div>
 <div class="c"><h2>Draft layout: array</h2><div style="overflow-x:auto" id="arr"></div></div>
 <div class="c"><ul class="note" id="notes"></ul></div>
@@ -83,7 +83,7 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 const $=id=>document.getElementById(id);let charts=[],D=null;
 function num(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)&&v>0?v:d}
 const php=n=>"₱"+Math.round(n).toLocaleString("en-PH");
-// ---- map (optional) ----
+
 let MAP=null,MARK=null,BASE=null,LG=null,LASTX=null,drawing=false,VERT=[],ROOF=[];
 function initMap(){if(typeof L==="undefined"){$("map").style.display="none";return}
  const m=MAP=L.map("map").setView([14.6,121],6);const osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}),sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:20,maxNativeZoom:18,attribution:"Tiles © Esri"});BASE={osm,sat};osm.addTo(m);LG=L.layerGroup().addTo(m);L.control.layers({Street:osm,Satellite:sat}).addTo(m);
@@ -92,18 +92,17 @@ function initMap(){if(typeof L==="undefined"){$("map").style.display="none";retu
  k.on("dragend",e=>mv(e.target.getLatLng()));m.on("click",e=>{if(drawing)return addVert(e.latlng);k.setLatLng(e.latlng);mv(e.latlng)});
  ["lat","lon"].forEach(id=>$(id).addEventListener("change",()=>{const a=parseFloat($("lat").value),b=parseFloat($("lon").value);if(isFinite(a)&&isFinite(b))k.setLatLng([a,b])}))}
 try{initMap()}catch(e){$("map").style.display="none"}
-// ---- hardware sizing ----
-// NEC Table 310.15(B)(16)-style copper ampacities [mm², nearest AWG, 75°C col, 90°C col]. Confirm against your cable maker's table.
+
 const WIRES=[[2.5,"14 AWG",20,25],[4,"12 AWG",25,30],[6,"10 AWG",35,40],[10,"8 AWG",50,55],[16,"6 AWG",65,75],[25,"4 AWG",85,95],[35,"2 AWG",115,130],[50,"1/0 AWG",150,170],[70,"2/0 AWG",175,195],[95,"3/0 AWG",200,225],[120,"4/0 AWG",230,260]];
 const vocF=t=>t>=20?1.02:t>=15?1.04:t>=10?1.06:t>=5?1.08:t>=0?1.10:t>=-5?1.12:t>=-10?1.14:t>=-15?1.16:t>=-20?1.18:t>=-25?1.20:t>=-30?1.21:t>=-35?1.23:1.25;
 const tf90=t=>t<=25?1.04:t<=30?1:t<=35?.96:t<=40?.91:t<=45?.87:t<=50?.82:t<=55?.76:t<=60?.71:t<=65?.65:.58;
 function numz(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)?v:d}
 const area=(i,len,v,dp)=>len*2*i*0.021/(v*dp/100);
-// vd = min mm² for voltage drop; i125 = current the 75°C terminals must carry; iAfter = current after derating; brkA = its breaker; tf = temp factor
 function wire(vd,i125,iAfter,brkA,tf){for(const[a,awg,a75,a90]of WIRES){const c=a90*tf;if(a>=vd&&a75>=i125&&c>=iAfter&&c>=brkA)return{mm:a,t:`${a.toFixed(1)} mm² (${awg})`}}return{mm:Math.max(vd,120),t:`${Math.ceil(Math.max(vd,120))}+ mm² (engineer to size)`}}
 const brk=(a,s)=>s.find(x=>x>=a)||Math.ceil(a/10)*10;
 const CON=[[15,15.8,"½″ (15 mm)"],[20,21,"¾″ (20 mm)"],[25,26.6,"1″ (25 mm)"],[32,35,"1¼″ (32 mm)"],[40,40.9,"1½″ (40 mm)"],[50,52.5,"2″ (50 mm)"],[65,62.7,"2½″ (65 mm)"],[80,77.9,"3″ (80 mm)"]];
 function conduit(mm,n){const od=1.4*Math.sqrt(mm)+3.5,id=od*Math.sqrt((n+1)/0.4);return(CON.find(c=>c[1]>=id)||CON[7])[2]}
+
 function design(s){
  const iSc=num("iSc",13.8),vmp=num("vmp",41.5),voc=num("voc",49.5),maxV=num("maxDcV",500),pvD=num("pvD",25),batD=num("batD",3),acD=num("acD",8),dp=num("drop",2),mpptMin=num("mpptMin",120),mppts=Math.max(1,Math.round(num("mppts",2))),maxPvA=num("maxPvA",25);
  const lowT=numz("lowT",15),roofT=numz("roofT",45),inT=numz("inT",35),vf=vocF(lowT),VL=$("bldg").value==="other"?1000:600,tfR=tf90(roofT),tfI=tf90(inT),maxFuse=num("maxFuse",25),sf=brk(iSc*1.56,[10,12,15,20,25,30,32,40]);
@@ -113,46 +112,45 @@ function design(s){
  const panels=strings*series;
  const Vs=vmp*series,Isc=iSc*strings,iv=s.inverter_kw;
  const vHot=Vs*0.85,perM=Math.ceil(strings/mppts),IscM=iSc*perM,dcac=panels*s.panel_watts/1000/iv;
- if(voc*vf>Math.min(maxV,VL))warns.push(`Even a single panel's cold V<sub>oc</sub> (${(voc*vf).toFixed(0)} V) exceeds the ${Math.min(maxV,VL)} V limit. Use a higher-voltage inverter or a smaller module`);
- if(vHot<mpptMin)warns.push(`Hot-weather string voltage ≈ ${vHot.toFixed(0)} V (V<sub>mp</sub> × ${series} at ~70 °C cell) is below the inverter's ${mpptMin} V MPPT minimum. `+(minS>maxS?`You need ${minS}+ panels in series, but voltage limits allow only ${maxS}: pick an inverter with a lower MPPT minimum or a higher max PV voltage`:`Wire at least ${minS} panels in series (more panels or fewer strings)`));
- if(IscM>maxPvA)warns.push(`${perM} string(s) per MPPT give ${IscM.toFixed(1)} A I<sub>sc</sub>, above the ${maxPvA} A input limit. Spread strings over more MPPT inputs or use an inverter with a higher PV current rating`);
- if(dcac>1.5)warns.push(`Array is ${dcac.toFixed(2)}× the inverter rating (${(panels*s.panel_watts/1000).toFixed(1)} kWp on ${iv} kW). Check the inverter's maximum PV input power; most allow about 1.3 to 1.5×`);
  const pvB=brk(Isc*1.56,[10,15,20,25,30,40,50,63,80,100,125]),pvW=wire(area(Isc*1.25,pvD,Vs,dp),Isc*1.5625,Isc*1.25,pvB,tfR);
- let BP=null,bn=[];if(bat){BP=pickBattery(s.battery_kwh,iv);
-  bn.push(`Battery: ${BP.qty} × ${BP.M.n} → ${BP.inst.toFixed(2)} kWh installed on a ${BP.V} V bus (${BP.ser} in series × ${BP.par} in parallel)`);
-  if(BP.V<48&&iv>3)bn.push(`A ${BP.V} V battery bus for a ${iv} kW inverter means very high DC current; a 48 V system is strongly preferred`);
-  if(BP.par>4)bn.push(`${BP.par} strings in parallel: confirm the battery maker's parallel limit, or use a higher-voltage or larger module`);
-  if(BP.V<48&&maxV>150)bn.push(`${BP.V} V inverters and charge controllers usually accept only about 100–150 V of PV; set the inverter max PV voltage field to match`);
-  if(BP.M.lead)bn.push("Lead-acid: 50% cutoff and about 80% round-trip efficiency were used. Expect a shorter life than LiFePO4, plus ventilation and maintenance")}
+ let BP=null,bn=[];if(bat){BP=pickBattery(s.battery_kwh,iv);}
  const bV=BP?BP.V:48,bI=iv*1000/(bV*0.95)*1.25,bB=bat?brk(bI,[40,50,63,80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,bV,dp),bI,bI/1.25,bB,tfI):null;
  const aI=iv*1000/230*1.25,aB=brk(aI,[15,20,30,40,50,60,80,100,125]),aW=wire(area(aI/1.25,acD,230,dp),aI,aI/1.25,aB,tfI);
- const cn=[`Code margins (PEC 2017, which follows NEC 2017 Art. 690; numbered 6.90 in the PEC): PV max current = Isc × 1.25; conductors and overcurrent devices at 125% of that (Isc × 1.56); wire also checked after temperature derating (factor ${tfR} at ${roofT} °C roof/conduit, ${tfI} at ${inT} °C indoors) and against 75 °C terminal ampacity. Battery and AC circuits use 125% of inverter current`,
-  `Voltage: V<sub>oc</sub> × ${vf} for a ${lowT} °C lowest ambient (NEC Table 690.7(A), crystalline silicon). Series limit ${Math.min(maxV,VL)} V (${VL===600?"one- and two-family dwelling":"other building"})`];
- if(strings>=3)cn.push(`3+ parallel strings: use ${sf} A string fuses`+(sf>maxFuse?`. This EXCEEDS the module's ${maxFuse} A max series fuse rating, so use fewer strings per combiner or other modules`:""));
  const rows=Math.ceil(strings*Math.ceil(series/12)),m=n=>Math.ceil(n);
  const run=(len,w,n)=>({len:m(len*1.1),sz:conduit(w.mm,n)});
  const cP=run(pvD,pvW,2),cB=bat?run(batD,bW,2):null,cA=run(acD,aW,3);
- const L=[["Solar PV modules",`${s.panel_watts} W mono, ${strings} string(s) × ${series}`,`${panels} pcs`],
- ["Mounting rails",'4.2 m aluminum',`${m(panels*2.26/4.2)} pcs`],["Roof hooks / feet","stainless, with sealant",`${m(panels*1.5)} pcs`],
- ["Mid / end clamps",'module clamps',`${(panels-rows)*2} / ${rows*4} pcs`],
- ["Inverter",`${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit"],
- ["PV cable",`${pvW.t}, UV, red + black`,`${m(pvD*2+(strings>1?strings*20:0))} m`],["MC4 connectors","IP67 pairs",`${strings*2+4} pairs`],
- [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", "+sf+" A string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
- ["DC isolator / breaker",`${pvB} A, 1000 V DC`,"1 unit"],["DC surge protector","Type 2, 1000 V DC","1 unit"]];
- if(bat)L.push(["Battery storage",`${BP.M.v} V ${BP.M.lead?"lead-acid":"LiFePO4"} ${BP.M.ah} Ah, ${BP.M.kwh} kWh each; ${BP.V} V bus; set inverter low-battery cutoff to match`,`${BP.qty} unit(s) (${BP.ser}S${BP.par}P)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
-  ["Battery cable",`${bW.t}, flexible, red + black`,`${m(batD*2)} m`],["Battery lugs & busbar","tinned copper, heat-shrink","1 lot"]);
- L.push(["AC breaker",`${aB} A, 2-pole 230 V`,"1 unit"],["AC surge protector","Type 2, 230 V","1 unit"],["AC cable",`${aW.t}, L + N + PE`,`${m(acD*3)} m`],
-  ["Breaker box (MDB)",`surface/flush, ≥ 8-way, with ${aB} A main`,"1 unit"]);
- if(grid)L.push(["Utility box",exp?"Interconnection / meter-side box, space for utility bi-directional meter":"Interconnection box with service disconnect","1 unit"]);
- if(zero)L.push(["Zero-export CT sensor","100 A split-core","1 set"]);
- if(!grid)L.push(["Generator ATS","auto transfer switch","1 unit"]);
- L.push(["Conduit: array run",`${cP.sz} PVC/EMT, 3 m lengths`,`${m(cP.len/3)} pcs`]);
- if(bat)L.push(["Conduit: battery run",`${cB.sz} PVC/EMT, 3 m lengths`,`${m(cB.len/3)} pcs`]);
- L.push(["Conduit: AC run",`${cA.sz} PVC/EMT, 3 m lengths`,`${m(cA.len/3)} pcs`],
-  ["Conduit fittings","elbows, couplings, adapters, pull boxes",`${m((cP.len+(cB?cB.len:0)+cA.len)/3)*2} pcs`],["Conduit clamps / saddles","spaced ~1 m",`${m(cP.len+(cB?cB.len:0)+cA.len)} pcs`],
-  ["Ground rod + clamp","5/8″ × 2.4 m copper-bonded","1 set"],["Ground wire","6 mm² green/yellow",`${m(pvD+acD+6)} m`],["Cable glands, ties, labels","UV ties, warning signs, labels","1 lot"]);
- return{warns,V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn:[...cn,...bn],panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*vf*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
-// ---- drawings ----
+
+ // Itemized BOM Calculations
+ const sysKw = panels * s.panel_watts / 1000;
+ const panelCost = sysKw * 1000 * 7.5;
+ const invCost = iv * 8500;
+ const batCost = BP ? BP.inst * 8500 : 0;
+ const rQty = m(panels * 2.26 / 4.2), hQty = m(panels * 1.5), cQty = panels * 2;
+
+ const L = [
+  ["Solar PV modules", `${s.panel_watts} W mono, ${strings} string(s) × ${series}`, `${panels} pcs`, php(panelCost)],
+  ["Mounting rails", '4.2 m aluminum', `${rQty} pcs`, php(rQty * 650)],
+  ["Roof hooks / feet", "stainless, with sealant", `${hQty} pcs`, php(hQty * 120)],
+  ["Mid / end clamps", 'module clamps', `${(panels-rows)*2} / ${rows*4} pcs`, php(cQty * 45)],
+  ["Inverter", `${iv} kW ${bat?"hybrid":"grid-tied"}, ${maxV} V max PV`,"1 unit", php(invCost)]
+ ];
+
+ if(bat) L.push(["Battery storage",`${BP.M.v} V LiFePO4, ${BP.inst.toFixed(2)} kWh`,`${BP.qty} unit(s)`, php(batCost)]);
+
+ L.push(
+  ["DC & AC Protection", "Combiner box, Breakers, SPDs, Isolators", "1 lot", php(6500)],
+  ["Cablings & Conduits", "UV DC Cable, THHN AC Wire, Conduit Runs", "1 lot", php(pvD * 90 + acD * 255 + 4700)],
+  ["Standard Installation Labor", "Mechanical roof mounting, electrical wiring, & commissioning", "1 job", php(sysKw * 3500)],
+  ["Engineering (PEE Sign & Seal)", "PEE review, signed single-line diagram, & structural clearance", "1 job", php(15000)]
+ );
+
+ if(exp) {
+  L.push(["Net Metering Processing Fee", "DU DIS, yellow card, meter calibration, & filing paperwork", "1 job", php(12000)]);
+ }
+
+ return{warns,V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn:[...bn],panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*vf*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}
+}
+
 function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
 const ln=(a,b,c,d,t,tx,ty)=>`<path class="ln" d="M${a} ${b}L${c} ${d}"/>${t?`<text x="${tx}" y="${ty}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${t}</text>`:""}`;
 function sld(d){let h="",y=95,x=10;
@@ -164,26 +162,20 @@ function sld(d){let h="",y=95,x=10;
  {h+=ln(575,125,615,125)+box(615,y,100,60,"AC breaker + SPD",d.aB+" A")+ln(715,125,745,125)+box(745,y,140,60,"Breaker box (MDB)","loads")}
  if(d.grid){h+=ln(815,95,815,55)+box(745,15,140,40,"Utility box / meter",d.exp?"bi-directional":"service disconnect")+ln(815,15,815,5,"")}
  else h+=ln(815,155,815,215)+box(745,215,140,40,"Generator ATS","");
- h+=`<text x="10" y="300" style="font-size:10px;fill:var(--mu)">Draft, not to scale. Ground all frames, rails, enclosures and inverter to the ground rod. Conduit: array ${d.cP.sz}, AC ${d.cA.sz}${d.cB?", battery "+d.cB.sz:""}.</text>`;
  $("sld").innerHTML=h}
 function arr(d){const pw=num("panL",2.28),ph=num("panW",1.13),per=Math.min(d.series,12),wraps=Math.ceil(d.series/per),k=Math.min(18,780/(per*pw)),rows=d.strings*wraps,W=per*pw*k+20,H=rows*ph*k+40,cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
  let h=`<svg width="${W}" height="${H}">`;
  for(let s=0;s<d.strings;s++)for(let p=0;p<d.series;p++){const r=s*wraps+Math.floor(p/per),c=p%per;h+=`<rect x="${10+c*pw*k}" y="${10+r*ph*k}" width="${pw*k-2}" height="${ph*k-2}" fill="${cols[s%6]}" opacity=".85"/>`}
- for(let s=0;s<d.strings;s++)h+=`<text x="${W-8}" y="${10+s*wraps*ph*k+ph*k/2+4}" text-anchor="end" style="fill:#fff;font-size:10px">S${s+1}</text>`;
- h+=`<text x="10" y="${H-8}" style="font-size:10px;fill:var(--mu)">≈ ${(per*pw).toFixed(1)} m × ${(rows*ph).toFixed(1)} m, ${(d.panels*pw*ph).toFixed(0)} m² of modules (landscape ${pw}×${ph} m). Add ~0.3 m setback and walkway. Draft, not to scale.</text></svg>`;$("arr").innerHTML=h}
-// ---- buy links (search links, not specific products) ----
-const QO={"Mid / end clamps":"solar panel mid clamp end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","MC4 connectors":"MC4 solar connector pair","PV combiner box":"PV combiner box","PV junction box":"solar PV junction box IP65","DC surge protector":"DC surge protector 1000V solar","Battery lugs & busbar":"battery cable lug busbar","AC surge protector":"AC surge protector 230V","Breaker box (MDB)":"circuit breaker panel board","Utility box":"electrical meter box enclosure","Conduit clamps / saddles":"PVC conduit pipe clamp","Ground rod + clamp":"copper bonded ground rod","Cable glands, ties, labels":"cable gland UV cable ties","Zero-export CT sensor":"split core CT sensor 100A","Generator ATS":"automatic transfer switch","Conduit fittings":"PVC conduit fittings elbow coupling"};
-function qry(r){const n=(r[1].match(/^[\d.]+/)||[""])[0],A=r[1].split(" ")[0]+"A";
- return r[0]==="Battery storage"?r[1].split(",")[0]+" battery":r[0]==="Inverter"?r[1].split(",")[0]+" solar inverter":r[0]==="PV cable"?n+"mm2 solar PV cable":r[0]==="Battery cable"?n+"mm2 flexible battery cable":r[0]==="AC cable"?n+"mm2 THHN wire":
- r[0].startsWith("Conduit:")?"PVC electrical conduit "+((r[1].match(/\((\d+) mm\)/)||[0,""])[1])+"mm":r[0]==="DC isolator / breaker"?A+" DC isolator switch 1000V":r[0]==="Battery breaker / fuse"?A+" DC MCCB breaker":r[0]==="AC breaker"?A+" 2 pole circuit breaker":QO[r[0]]||null}
-function buy(r){const q=encodeURIComponent(qry(r)||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim());
- const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;
- return a("https://shopee.ph/search?keyword=","Shopee")+" · "+a("https://www.lazada.com.ph/catalog/?q=","Lazada")+" · "+a("https://www.google.com/search?q=","Google")}
-// ---- roof drawing & panel placement (plan view, local metres) ----
-function addVert(ll){VERT.push(ll);LG.clearLayers();L.polyline(VERT,{color:"#f59e0b",dashArray:"4"}).addTo(LG);VERT.forEach(v=>L.circleMarker(v,{radius:4,color:"#f59e0b"}).addTo(LG));$("roofSt").textContent=VERT.length+" corner(s). Click more corners, then press Finish."}
-function startRoof(){if(!MAP)return;drawing=true;VERT=[];ROOF=[];LG.clearLayers();MAP.removeLayer(BASE.osm);BASE.sat.addTo(MAP);MAP.setView(MARK.getLatLng(),19);$("roofSt").textContent="Click the roof corners on the satellite image, then press Finish."}
-function finishRoof(){if(VERT.length<3){$("roofSt").textContent="Need at least 3 corners.";return}drawing=false;ROOF=VERT.slice();VERT=[];layoutRoof()}
-function clearRoof(){drawing=false;VERT=[];ROOF=[];if(LG)LG.clearLayers();$("roofSt").textContent=""}
+ $("arr").innerHTML=h}
+
+const QO={"Mid / end clamps":"solar panel mid clamp end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","MC4 connectors":"MC4 solar connector pair"};
+function qry(r){return QO[r[0]]||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim()}
+function buy(r){const q=encodeURIComponent(qry(r));const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;return a("https://shopee.ph/search?keyword=","Shopee")+" · "+a("https://www.lazada.com.ph/catalog/?q=","Lazada")}
+
+function addVert(ll){VERT.push(ll);LG.clearLayers();L.polyline(VERT,{color:"#f59e0b",dashArray:"4"}).addTo(LG);}
+function startRoof(){if(!MAP)return;drawing=true;VERT=[];ROOF=[];LG.clearLayers();MAP.removeLayer(BASE.osm);BASE.sat.addTo(MAP);MAP.setView(MARK.getLatLng(),19);}
+function finishRoof(){if(VERT.length<3)return;drawing=false;ROOF=VERT.slice();VERT=[];layoutRoof()}
+function clearRoof(){drawing=false;VERT=[];ROOF=[];if(LG)LG.clearLayers();}
 const kk=la=>[111320*Math.cos(la*Math.PI/180),110574];
 function pip(p,P){let c=false;for(let i=0,j=P.length-1;i<P.length;j=i++){const a=P[i],b=P[j];if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])c=!c}return c}
 function dseg(p,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],l=dx*dx+dy*dy;let t=l?((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l:0;t=Math.max(0,Math.min(1,t));return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy)}
@@ -191,7 +183,7 @@ const inside=(p,P,sb)=>pip(p,P)&&P.every((a,i)=>dseg(p,a,P[(i+1)%P.length])>=sb)
 function layoutRoof(){
  if(!LG||ROOF.length<3)return;LG.clearLayers();
  L.polygon(ROOF,{color:"#f59e0b",weight:2,dashArray:"5",fill:false}).addTo(LG);
- if(!LASTX){$("roofSt").textContent="Roof outlined. Run Design & simulate to place panels.";return}
+ if(!LASTX)return;
  const o=ROOF[0],k=kk(o.lat),P=ROOF.map(p=>[(p.lng-o.lng)*k[0],(p.lat-o.lat)*k[1]]);
  let best=0,ang=0;P.forEach((a,i)=>{const b=P[(i+1)%P.length],l=Math.hypot(b[0]-a[0],b[1]-a[1]);if(l>best){best=l;ang=Math.atan2(b[1]-a[1],b[0]-a[0])}});
  ang+=(parseFloat($("roofAng").value)||0)*Math.PI/180;
@@ -202,19 +194,17 @@ function layoutRoof(){
  for(let y=y0+sb;y+h<=y1-sb+1e-6;y+=h+gap){const row=[];for(let x=x0+sb;x+w<=x1-sb+1e-6;x+=w+gap){const q=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];if(q.every(p=>inside(p,R,sb)))row.push(q)}if(ri++%2)row.reverse();cand.push(...row)}
  const N=LASTX.panels,use=cand.slice(0,N),cols=["#d97706","#2563eb","#059669","#9333ea","#dc2626","#0891b2"];
  use.forEach((q,i)=>L.polygon(q.map(p=>{const u=unrot(p);return[o.lat+u[1]/k[1],o.lng+u[0]/k[0]]}),{color:"#fff",weight:1,fillColor:cols[Math.floor(i/LASTX.series)%6],fillOpacity:.75}).addTo(LG));
- let A=0;P.forEach((a,i)=>{const b=P[(i+1)%P.length];A+=a[0]*b[1]-b[0]*a[1]});A=Math.abs(A)/2;
- $("roofSt").textContent=`Roof ≈ ${A.toFixed(0)} m². ${use.length} of ${N} panels fit.`+(use.length<N?` This roof holds at most ${cand.length} panels (≈ ${(cand.length*(LASTX.panelW||0)/1000).toFixed(1)} kWp). Draw a larger area, reduce setback, or lower the target offset.`:" Colors show strings, filled in a snake pattern so each string stays adjacent.")+" Plan view: on a pitched roof, panels are slightly shorter along the slope."}
+}
 document.addEventListener("change",e=>{if(e.target.closest&&e.target.closest(".tools"))layoutRoof()});
-// ---- appliances ----
+
 const PRE={"Aircon 1.0 hp inverter":[800,1,8,21,2],"Aircon 1.5 hp inverter":[1100,1,8,21,2],"Aircon 1.0 hp non-inverter":[900,1,8,21,4],"Refrigerator":[150,1,24,0,4],"Water pump 0.5 hp":[400,1,2,6,3],"Electric shower heater":[3500,1,0.5,6,1],"Washing machine":[500,1,1,9,2],"Rice cooker":[700,1,1,18,1],"Microwave / oven":[1200,1,0.5,18,1],"Lights, TV, electronics":[300,1,6,18,1],"EV charger (3.3 kW)":[3300,1,3,22,1]};
 let APP=[];const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 $("preset").innerHTML=Object.keys(PRE).map(n=>`<option>${n}</option>`).join("");
 function addApp(){const n=$("preset").value,p=PRE[n];APP.push({name:n,watts:p[0],qty:p[1],hours:p[2],start:p[3],surge:p[4]});drawApps()}
 function drawApps(){$("appRows").innerHTML=APP.map((a,i)=>`<div class="app"><div class="r" style="grid-template-columns:1fr auto"><input value="${esc(a.name)}" oninput="APP[${i}].name=this.value"><button type="button" style="margin:0;padding:2px 9px;width:auto" onclick="APP.splice(${i},1);drawApps()">×</button></div><div class="r5">${[["watts","W"],["qty","Qty"],["hours","h/day"],["start","Start h"],["surge","Surge ×"]].map(([k,l])=>`<label>${l}<input type="number" step="any" value="${a[k]}" oninput="APP[${i}].${k}=parseFloat(this.value)||0"></label>`).join("")}</div></div>`).join("")}
-// ---- battery modules ----
-const MODS=[{n:"12.8 V 100 Ah LiFePO4 (1.28 kWh)",v:12.8,ah:100,kwh:1.28},{n:"25.6 V 100 Ah LiFePO4 (2.56 kWh)",v:25.6,ah:100,kwh:2.56},{n:"51.2 V 50 Ah LiFePO4 (2.56 kWh)",v:51.2,ah:50,kwh:2.56},{n:"51.2 V 100 Ah LiFePO4 (5.12 kWh)",v:51.2,ah:100,kwh:5.12},{n:"51.2 V 200 Ah LiFePO4 (10.24 kWh)",v:51.2,ah:200,kwh:10.24},{n:"12 V 100 Ah lead-acid / AGM / gel (1.2 kWh)",v:12,ah:100,kwh:1.2,lead:1}];
+
+const MODS=[{n:"12.8 V 100 Ah LiFePO4 (1.28 kWh)",v:12.8,ah:100,kwh:1.28},{n:"25.6 V 100 Ah LiFePO4 (2.56 kWh)",v:25.6,ah:100,kwh:2.56},{n:"51.2 V 50 Ah LiFePO4 (2.56 kWh)",v:51.2,ah:50,kwh:2.56},{n:"51.2 V 100 Ah LiFePO4 (5.12 kWh)",v:51.2,ah:100,kwh:5.12},{n:"51.2 V 200 Ah LiFePO4 (10.24 kWh)",v:51.2,ah:200,kwh:10.24}];
 $("batMod").innerHTML='<option value="auto">Auto (by inverter size)</option>'+MODS.map((m,i)=>`<option value="${i}">${m.n}</option>`).join("");
-$("batMod").addEventListener("change",()=>{const i=$("batMod").value;$("battery_cutoff_pct").value=i!=="auto"&&MODS[+i].lead?50:20});
 function pickBattery(kwh,iv){
  const sel=$("batMod").value;let M;
  if(sel!=="auto")M=MODS[+sel];
@@ -222,41 +212,38 @@ function pickBattery(kwh,iv){
  else{M=[MODS[2],MODS[3],MODS[4]].map(m=>({m,inst:Math.ceil(kwh/m.kwh)*m.kwh})).sort((a,b)=>a.inst-b.inst||b.m.kwh-a.m.kwh)[0].m}
  const V=M.v>40?48:M.v>20?24:(iv<=1?12:iv<=3?24:48),ser=M.v>20?1:Math.round(V/12),par=Math.max(1,Math.ceil(kwh/(M.kwh*ser)));
  return{M,V,ser,par,qty:par*ser,inst:par*ser*M.kwh}}
+
 async function post(b){let r,d;
- try{r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})}catch(e){throw new Error("Cannot reach the server. Is it running?")}
- try{d=await r.json()}catch(e){throw new Error("Server error "+r.status+(r.statusText?" ("+r.statusText+")":""))}
- if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):typeof d.detail==="string"?d.detail:"Request failed ("+r.status+")");d._req=b;return d}
+ try{r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})}catch(e){throw new Error("Cannot reach the server.")}
+ try{d=await r.json()}catch(e){throw new Error("Server error")}
+ if(!r.ok)throw new Error("Request failed");d._req=b;return d}
+
 async function reconcile(d){for(let i=0;i<3;i++){const s=d.summary,x=design(s),bm=x.bat&&Math.abs(x.instKwh-s.battery_kwh)>0.005;if(x.panels===s.panel_count&&!bm)break;
  const b2={...d._req,system_kw:x.panels*s.panel_watts/1000};if(x.bat)b2.battery_kwh=x.instKwh;
- const n=await post(b2);n.assumptions.notes.unshift(`Re-simulated with the hardware as designed: ${x.panels} panels (${x.strings}×${x.series})`+(x.bat?`, ${x.instKwh} kWh installed battery`:"")+", instead of the ideal sizes, so results match the bill of materials");d=n}return d}
-async function nc2(b,d0,ap){
- const s0=d0.summary,daily=d0.assumptions.monthly_kwh*12/365,psh=s0.specific_yield_kwh_per_kwp/365/0.86,kw=daily*1.3/psh,cut=(b.battery_cutoff_pct??20)/100,b2={...b,system_kw:+kw.toFixed(2)},conn=ap.reduce((t,a)=>t+a.watts*a.qty,0)/1000;
- if(b.topology!=="grid-tied"&&b.battery_kwh===undefined)b2.battery_kwh=+(daily*(b.autonomy_days||1)/((1-cut)*0.85)).toFixed(1);
- b2.inverter_kw=b.topology==="grid-tied"?+kw.toFixed(2):conn>0?+(conn*1.25).toFixed(2):s0.inverter_kw;
- const d=await post(b2);
- d.assumptions.notes.unshift(`Method: NC II-style classroom sizing. Array = ${daily.toFixed(1)} kWh/day × 1.3 ÷ ${psh.toFixed(2)} peak sun hours (from PVGIS yield) = ${kw.toFixed(2)} kW; battery = daily kWh × autonomy ÷ (usable × 0.85); inverter = connected load × 1.25 (grid-tied: array rating). Not checked against the official TESDA handout`);return d}
-// ---- render ----
+ const n=await post(b2);d=n}return d}
+
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
-function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
- charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},...(D.summary.battery_kwh>0?[{label:"Battery SOC %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"},{label:"Cutoff %",data:Array(24).fill(D.summary.battery_cutoff_pct),borderColor:"#ef4444",borderDash:[2,4],pointRadius:0,yAxisID:"y2"}]:[])]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{display:D.summary.battery_kwh>0,position:"right",min:0,max:100,grid:{drawOnChartArea:false}}}}})}
+function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00");
+ charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},...(D.summary.battery_kwh>0?[{label:"Battery SOC %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"}]:[])]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{display:D.summary.battery_kwh>0,position:"right",min:0,max:100}}}})
+}
+
 function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
- $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW",s.peak_running_kw?`Inverter (peak ${s.peak_running_kw} kW running)`:"Inverter"],[s.battery_kwh>0?s.battery_kwh+" kWh":"None",s.battery_kwh>0?"Battery, "+(100-s.battery_cutoff_pct)+"% usable":"Battery"],[s.solar_coverage_pct+"%","Load from solar"],[php(s.year1_savings_php),"Year-1 savings"],[php(s.total_cost_php),"Total cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
+ $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW","Inverter"],[s.battery_kwh>0?s.battery_kwh+" kWh":"None","Battery"],[s.solar_coverage_pct+"%","Solar Coverage"],[php(s.year1_savings_php),"Year-1 Savings"],[php(s.total_cost_php),"Total Cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
  charts.forEach(c=>c&&c.destroy());const m=d.monthly,lb=m.map(r=>r.month);
- charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Curtailed","curtail","#9ca3af"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
+ charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
  charts[1]=new Chart($("c2"),{type:"line",data:{labels:d.cash_flow.map(r=>r.year),datasets:[{label:"Cumulative ₱",data:d.cash_flow.map(r=>r.cumulative_php),borderColor:"#2563eb",backgroundColor:"#2563eb33",fill:true,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false}});
  $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
- table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC (array → inverter)",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC (inverter → panel)",x.aB+" A AC",x.aW.t,x.cA.sz]]);
- table("bom",["Item","Specification","Qty","Where to buy"],x.L.map(r=>[...r,buy(r)]));sld(x);arr(x);
- $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...x.bn,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");const W=[...(/^FALLBACK/.test(d.assumptions.yield_source)?["Sun data: PVGIS was unavailable, so a generic flat 4.5 peak-sun-hour day is used for every day of the year. Treat all energy, savings and payback numbers as rough."]:[]),...(s.stress_unserved_pct>0?[`Cloudy-spell stress test: ${s.stress_unserved_pct}% of load goes unserved over the worst 3-day stretch. Add battery or PV, or plan a generator.`]:[]),...x.warns];
- $("warn").hidden=!W.length;$("warn").innerHTML=W.length?'<h2>Check before relying on this design</h2><ul class="note">'+W.map(n=>`<li>${n}</li>`).join("")+"</ul>":"";
- $("out").hidden=false;layoutRoof()}
+ table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC Output",x.aB+" A AC",x.aW.t,x.cA.sz]]);
+ 
+ // Itemized BOM Output Table Rendering
+ table("bom", ["Item", "Specification", "Qty", "Est. Market Cost", "Where to buy"], x.L.map(r => [r[0], r[1], r[2], r[3], buy(r)]));
+ sld(x);arr(x);
+ $("out").hidden=false;layoutRoof()
+}
+
 $("mon").addEventListener("change",day);
-$("monthly_bill").addEventListener("input",()=>{if($("monthly_bill").value!=="")$("monthly_kwh").value=""});$("monthly_kwh").addEventListener("input",()=>{if($("monthly_kwh").value!=="")$("monthly_bill").value=""});
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
  for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","battery_cutoff_pct","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
- if(b.monthly_kwh&&b.monthly_bill)delete b.monthly_bill;
- const ap=APP.filter(a=>a.watts>0&&a.hours>0).map(a=>({name:a.name,watts:a.watts,qty:Math.max(1,Math.round(a.qty)||1),hours:Math.min(24,a.hours),start:Math.max(0,Math.min(23,Math.round(a.start)||0)),surge:Math.max(1,a.surge||1)}));if(ap.length)b.appliances=ap;
- const bm=$("batMod").value;if(bm!=="auto"&&MODS[+bm].lead)b.battery_roundtrip_eff=0.8;
- $("go").disabled=true;try{let d=await post(b);if($("method").value==="nc2")d=await nc2(b,d,ap);d=await reconcile(d);render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
+ $("go").disabled=true;try{let d=await post(b);d=await reconcile(d);render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>
