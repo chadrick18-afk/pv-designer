@@ -78,6 +78,7 @@ class SimRequest(BaseModel):
     azimuth: float = Field(180, ge=0, le=360)
     target_offset: float = Field(0.8, gt=0, le=1.2)
     system_kw: Optional[float] = Field(None, gt=0)
+    inverter_kw: Optional[float] = Field(None, gt=0, le=200, description="override the auto-sized inverter")
     panel_watts: int = Field(450, ge=100, le=800)
     battery_kwh: Optional[float] = Field(None, ge=0, description="blank = auto-size")
     autonomy_days: float = Field(1, ge=0.5, le=5)
@@ -238,6 +239,9 @@ def simulate(req: SimRequest):
         notes.append(f"Inverter sized for peak running load {peak_run:.1f} kW + largest start surge {surge_extra:.1f} kW (+10% margin)")
     else:
         inv_kw = max(1, ceil(max(daily * max(prof) * 1.5, kw / 1.25)))
+    if req.inverter_kw:
+        inv_kw = round(req.inverter_kw, 2)
+        notes.append(f"Inverter size set by method/override: {inv_kw} kW")
 
     mon, day = dispatch(pv, kw, monthly_kwh, prof, bat, req.battery_roundtrip_eff,
                         usable, inv_kw, grid, req.battery_cutoff_pct)
