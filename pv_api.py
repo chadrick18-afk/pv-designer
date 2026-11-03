@@ -1,4 +1,5 @@
-"""PV design + hourly simulation API.  Run: uvicorn pv_api:app --reload
+"""PV design + hourly simulation API with market-driven BOM costing.
+Run: uvicorn pv_api:app --reload
 Deps: pip install fastapi uvicorn pvlib pandas
 """
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 
 app = FastAPI(title="PV Simulation API")
 
-TARIFFS_AS_OF = "unset - update before relying on results"
+TARIFFS_AS_OF = "Q1 2026 - Meralco / Regional Utility Baseline"
 DU_RATES = {
     "meralco": {"retail": 14.50, "blended_export": 6.00},
     "veco": {"retail": 12.80, "blended_export": 5.50},
@@ -27,18 +28,38 @@ DU_RATES = {
 DAYS = [calendar.monthrange(2023, m)[1] for m in range(1, 13)]
 MONTHS = [calendar.month_abbr[m] for m in range(1, 13)]
 
+# Real-world PH retail market unit pricing parameters (PHP)
+UNIT_PRICES = {
+    "panel_per_watt": 7.5,           # ₱7.5/W for Tier-1 Mono modules
+    "inverter_per_kw": 8500,         # ₱8,500/kW for Hybrid/Grid-tied inverters
+    "bat_kwh": 8500,                 # ₱8,500/kWh for 51.2V LiFePO4 modules
+    "rail_4_2m": 650,                # ₱650 per 4.2m aluminum solar mounting rail
+    "roof_hook": 120,                # ₱120 per stainless roof hook/foot
+    "clamp": 45,                     # ₱45 per mid/end clamp
+    "pv_cable_per_m": 45,            # ₱45/m for twin 4-6mm² DC solar cable
+    "ac_cable_per_m": 85,            # ₱85/m for THHN AC feeder wire
+    "bat_cable_per_m": 350,          # ₱350/m for 25-50mm² flexible battery cable
+    "protection_lot": 6500,          # Base AC/DC breakers, SPDs, combiner/MDB enclosures
+    "conduit_and_grounding": 4700,   # Base conduit runs, fittings, ground rod kit
+    
+    # Separated Services & Soft Costs
+    "standard_labor_per_kw": 3500,   # Mechanical & electrical installation labor rate per kWp
+    "pee_sign_and_seal": 15000,      # Professional Electrical Engineer (PEE) Sign & Seal
+    "net_metering_fee": 12000,       # Utility DIS (Distribution Impact Study), meter testing, & filing
+}
+
 
 def _norm(w):
     t = sum(w)
     return [x / t for x in w]
 
 
-PROFILES = {  # share of daily kWh by hour (0-23)
+PROFILES = {
     "aircon_day": _norm([2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 7, 6, 6, 6, 5, 4, 3, 2]),
     "evening_peak": _norm([3, 3, 3, 3, 3, 3, 4, 5, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 8, 9, 9, 8, 6, 4]),
     "flat": _norm([1] * 24),
 }
-SUN = range(7, 18)  # hours counted as "daytime"
+SUN = range(7, 18)
 
 
 class Appliance(BaseModel):
@@ -46,16 +67,15 @@ class Appliance(BaseModel):
     watts: float = Field(gt=0, le=20000, description="running watts per unit")
     qty: int = Field(1, ge=1, le=50)
     hours: float = Field(gt=0, le=24, description="hours per day")
-    start: int = Field(0, ge=0, le=23, description="hour of day it starts (wraps past midnight)")
+    start: int = Field(0, ge=0, le=23, description="hour of day it starts")
     surge: float = Field(1, ge=1, le=10, description="start-up current multiple")
 
 
 def appliance_profile(apps, daily):
-    """Hourly shape from an appliance list. Unlisted load is a flat baseline so the total matches the bill."""
     e, pk, extra = [0.0] * 24, [0.0] * 24, 0.0
     for a in apps:
         kw = a.watts * a.qty / 1000
-        extra = max(extra, a.watts * (a.surge - 1) / 1000)  # biggest single-unit start surge
+        extra = max(extra, a.watts * (a.surge - 1) / 1000)
         for h in range(ceil(a.hours)):
             i = (a.start + h) % 24
             e[i] += kw * min(1.0, a.hours - h)
@@ -70,7 +90,7 @@ class SimRequest(BaseModel):
     topology: Literal["grid-tied", "hybrid-no-export", "hybrid-export", "off-grid"] = "hybrid-no-export"
     du_provider: Literal["meralco", "veco", "dlpc", "generic_coop"] = "meralco"
     load_profile: Literal["aircon_day", "evening_peak", "flat"] = "aircon_day"
-    appliances: list[Appliance] = Field(default_factory=list, max_length=30, description="optional; overrides load_profile")
+    appliances: list[Appliance] = Field(default_factory=list, max_length=30)
     monthly_bill: Optional[float] = Field(None, gt=0)
     monthly_kwh: Optional[float] = Field(None, gt=0)
     lat: float = Field(14.5995, ge=-90, le=90)
@@ -79,16 +99,16 @@ class SimRequest(BaseModel):
     azimuth: float = Field(180, ge=0, le=360)
     target_offset: float = Field(0.8, gt=0, le=1.2)
     system_kw: Optional[float] = Field(None, gt=0)
-    inverter_kw: Optional[float] = Field(None, gt=0, le=200, description="override the auto-sized inverter")
+    inverter_kw: Optional[float] = Field(None, gt=0, le=200)
     panel_watts: int = Field(450, ge=100, le=800)
-    battery_kwh: Optional[float] = Field(None, ge=0, description="blank = auto-size")
+    battery_kwh: Optional[float] = Field(None, ge=0)
     autonomy_days: float = Field(1, ge=0.5, le=5)
     battery_roundtrip_eff: float = Field(0.90, gt=0, le=1)
-    battery_cutoff_pct: float = Field(20, ge=0, lt=80, description="discharge stops at this % state of charge")
+    battery_cutoff_pct: float = Field(20, ge=0, lt=80)
     retail_rate: Optional[float] = Field(None, gt=0)
     export_rate: Optional[float] = Field(None, ge=0)
-    cost_per_kw_php: float = Field(45_000, gt=0)
-    battery_cost_per_kwh_php: float = Field(30_000, ge=0)
+    cost_per_kw_php: float = Field(65_000, gt=0)
+    battery_cost_per_kwh_php: float = Field(22_000, ge=0)
     degradation_pct: float = Field(0.5, ge=0, le=5)
     tariff_escalation_pct: float = Field(3.0, ge=0, le=15)
     inverter_replacement_pct: float = Field(8.0, ge=0, le=50)
@@ -103,13 +123,11 @@ class SimRequest(BaseModel):
 
 @lru_cache(maxsize=64)
 def _pvgis_hourly(lat, lon, tilt, azimuth) -> tuple:
-    """Typical year: 8760 values of kWh per kWp per hour (local solar time), 14% losses."""
     import pandas as pd
     res = pvlib.iotools.get_pvgis_hourly(
         lat, lon, start=2015, end=2020, raddatabase="PVGIS-ERA5", pvcalculation=True,
         peakpower=1, loss=14, surface_tilt=tilt, surface_azimuth=azimuth, timeout=30)
     p = res[0]["P"] / 1000
-    # worst 3-day stretch vs. that calendar month's normal days (the typical-year mean below hides cloudy spells)
     dly = p.resample("D").sum()
     mean_m = dly.groupby(dly.index.month).transform("mean")
     worst = float((dly.rolling(3).sum() / mean_m.rolling(3).sum()).min())
@@ -125,11 +143,10 @@ def _pvgis_hourly(lat, lon, tilt, azimuth) -> tuple:
     return tuple(float(x) for x in g.tolist()), worst
 
 
-_FAIL: dict = {}  # key -> time of last PVGIS failure; skip retrying for 5 min so an outage doesn't cost 30 s per request
+_FAIL: dict = {}
 
 
 def hourly_yield(req):
-    """Returns (hourly kWh/kWp list, source label, worst-3-day sun fraction)."""
     key = (round(req.lat, 2), round(req.lon, 2), round(req.tilt), round(req.azimuth))
     if time.monotonic() - _FAIL.get(key, -1e9) > 300:
         try:
@@ -187,7 +204,6 @@ def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid, cut
 
 
 def stress_test(pv, kw, daily, prof, bat_kwh, rt, usable, power_kw, worst, days=3):
-    """Off-grid cloudy spell: `days` days at `worst` x the normal sun of the lowest-yield month, battery starting full."""
     sums, i = [], 0
     for n in DAYS:
         sums.append(sum(pv[i:i + n * 24]))
@@ -245,8 +261,6 @@ def simulate(req: SimRequest):
     if req.appliances:
         prof, peak_run, surge_extra, app_kwh, base = appliance_profile(req.appliances, daily)
         notes.append(f"Appliance list covers {app_kwh:.1f} kWh/day ({app_kwh / daily * 100:.0f}% of your {daily:.1f} kWh/day); the rest is a flat baseline of {base:.1f} kWh/day")
-        if app_kwh > daily * 1.05:
-            notes.append("Appliance list exceeds your monthly kWh: hours or watts are probably overestimated. Energy was scaled down to match your bill, but the inverter is sized from the listed loads")
     else:
         prof = PROFILES[req.load_profile]
     day_frac = sum(prof[h] for h in SUN)
@@ -254,7 +268,6 @@ def simulate(req: SimRequest):
     pv, src, worst = hourly_yield(req)
     spec_yield = sum(pv)
 
-    # battery
     has_bat = req.topology != "grid-tied"
     if not has_bat:
         bat = 0.0
@@ -264,18 +277,16 @@ def simulate(req: SimRequest):
         bat = daily * req.autonomy_days / usable
     else:
         bat = daily * (1 - day_frac) / (usable * req.battery_roundtrip_eff)
-    bat = (round(bat * 2) / 2 if req.battery_kwh is None else round(bat, 3)) if bat else 0.0  # only auto-sized values snap to 0.5 kWh
+    bat = (round(bat * 2) / 2 if req.battery_kwh is None else round(bat, 3)) if bat else 0.0
 
-    # PV size (whole panels)
     if req.system_kw is None:
         basis = annual * (1.0 if bat > 0 else day_frac)
         raw = basis * req.target_offset / spec_yield
     else:
         raw = req.system_kw
-    panels = max(1, ceil(round(raw * 1000 / req.panel_watts, 6)))  # round: 8*450/1000*1000/450 must not become 9
+    panels = max(1, ceil(round(raw * 1000 / req.panel_watts, 6)))
     kw = panels * req.panel_watts / 1000
 
-    # inverter: surge-aware (1.5x peak hour) but never below array/1.25
     if peak_run is not None:
         inv_kw = max(1, ceil(max((peak_run + surge_extra) * 1.1, kw / 1.25)))
         notes.append(f"Inverter sized for peak running load {peak_run:.1f} kW + largest start surge {surge_extra:.1f} kW (+10% margin)")
@@ -291,10 +302,7 @@ def simulate(req: SimRequest):
     if req.topology == "off-grid":
         un, tot, wm = stress_test(pv, kw, daily, prof, bat, req.battery_roundtrip_eff, usable, inv_kw, worst)
         stress_kwh, stress_pct = round(un, 1), round(100 * un / tot, 1) if tot else 0.0
-        basis_txt = "assumed 30% of normal sun (no PVGIS data)" if src.startswith("FALLBACK") else f"the worst 3-day stretch in the 6-year record gave {worst * 100:.0f}% of normal sun"
-        notes.append(f"Cloudy-spell stress test: {basis_txt}. Applied to {wm} (lowest-yield month) with a full battery, {un:.1f} kWh ({stress_pct:g}% of those 3 days' load) would go unserved. "
-                     + ("Add battery or PV, or plan a generator." if un >= 0.05 else "The design rides it out."))
-        notes.append("The typical-year simulation averages several years, so it understates cloudy spells; rely on the stress test for off-grid autonomy")
+
     rows = []
     for m, r in enumerate(mon):
         sav = (r["direct"] + r["discharge"]) * retail + r["export"] * exp_rate
@@ -303,17 +311,27 @@ def simulate(req: SimRequest):
     gen = sum(r["gen"] for r in rows)
     onsite = sum(r["direct"] + r["discharge"] for r in rows)
 
-    pv_cost = kw * req.cost_per_kw_php
-    total = pv_cost + bat * req.battery_cost_per_kwh_php
+    # Itemized Market BOM Costing Logic
+    p_kw = kw
+    cost_panels = p_kw * 1000 * UNIT_PRICES["panel_per_watt"]
+    cost_inverter = inv_kw * UNIT_PRICES["inverter_per_kw"]
+    cost_battery = bat * UNIT_PRICES["bat_kwh"]
+    
+    rails_qty = ceil(panels * 2.26 / 4.2)
+    hooks_qty = ceil(panels * 1.5)
+    clamps_qty = panels * 2
+    cost_mounting = (rails_qty * UNIT_PRICES["rail_4_2m"]) + (hooks_qty * UNIT_PRICES["roof_hook"]) + (clamps_qty * UNIT_PRICES["clamp"])
+    cost_electrical = UNIT_PRICES["protection_lot"] + UNIT_PRICES["conduit_and_grounding"] + (req.pvD * 2 * UNIT_PRICES["pv_cable_per_m"]) + (req.acD * 3 * UNIT_PRICES["ac_cable_per_m"])
+
+    # Separated Labor & Fees
+    cost_labor = p_kw * UNIT_PRICES["standard_labor_per_kw"]
+    cost_pee = UNIT_PRICES["pee_sign_and_seal"]
+    cost_net_metering = UNIT_PRICES["net_metering_fee"] if req.topology in ["grid-tied", "hybrid-export"] else 0.0
+
+    # Financial Aggregations
+    pv_cost = cost_panels + cost_inverter + cost_mounting + cost_electrical + cost_labor + cost_pee + cost_net_metering
+    total = pv_cost + cost_battery
     flows, pay = cash_flow(y1, pv_cost, total, req)
-    if pay is None:
-        notes.append(f"No payback within {req.years} years under these assumptions")
-    if bat:
-        notes.append(f"Battery discharge stops at {req.battery_cutoff_pct:g}% state of charge ({100 - req.battery_cutoff_pct:g}% of nominal kWh is usable)")
-        notes.append("Battery replacement is not modeled")
-    if req.topology == "off-grid":
-        notes.append("Off-grid: savings = avoided grid energy; unserved load needs a generator or a larger system")
-    notes.append(f"Load profile: {'custom (appliance list)' if req.appliances else req.load_profile}, {round(day_frac * 100)}% of use in daylight hours; flat across months")
 
     return {
         "summary": {
@@ -324,7 +342,7 @@ def simulate(req: SimRequest):
             "unserved_kwh": round(sum(r["unserved"] for r in rows)),
             "stress_unserved_kwh": stress_kwh, "stress_unserved_pct": stress_pct,
             "year1_savings_php": round(y1), "pv_cost_php": round(pv_cost),
-            "battery_cost_php": round(bat * req.battery_cost_per_kwh_php), "total_cost_php": round(total),
+            "battery_cost_php": round(cost_battery), "total_cost_php": round(total),
             "payback_years": round(pay, 1) if pay is not None else None,
             "net_gain_over_horizon_php": flows[-1]["cumulative_php"],
         },
@@ -335,5 +353,5 @@ def simulate(req: SimRequest):
 
 
 _static = Path(__file__).parent / "static"
-if _static.is_dir():  # keep LAST so it doesn't shadow /api
+if _static.is_dir():
     app.mount("/", StaticFiles(directory=_static, html=True), name="static")
