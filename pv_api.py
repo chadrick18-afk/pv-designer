@@ -40,10 +40,36 @@ PROFILES = {  # share of daily kWh by hour (0-23)
 SUN = range(7, 18)  # hours counted as "daytime"
 
 
+class Appliance(BaseModel):
+    name: str = Field("", max_length=60)
+    watts: float = Field(gt=0, le=20000, description="running watts per unit")
+    qty: int = Field(1, ge=1, le=50)
+    hours: float = Field(gt=0, le=24, description="hours per day")
+    start: int = Field(0, ge=0, le=23, description="hour of day it starts (wraps past midnight)")
+    surge: float = Field(1, ge=1, le=10, description="start-up current multiple")
+
+
+def appliance_profile(apps, daily):
+    """Hourly shape from an appliance list. Unlisted load is a flat baseline so the total matches the bill."""
+    e, pk, extra = [0.0] * 24, [0.0] * 24, 0.0
+    for a in apps:
+        kw = a.watts * a.qty / 1000
+        extra = max(extra, a.watts * (a.surge - 1) / 1000)  # biggest single-unit start surge
+        for h in range(ceil(a.hours)):
+            i = (a.start + h) % 24
+            e[i] += kw * min(1.0, a.hours - h)
+            pk[i] += kw
+    tot = sum(e)
+    base = max(0.0, daily - tot)
+    prof = _norm([x + base / 24 for x in e])
+    return prof, max(x + base / 24 for x in pk), extra, tot, base
+
+
 class SimRequest(BaseModel):
     topology: Literal["grid-tied", "hybrid-no-export", "hybrid-export", "off-grid"] = "hybrid-no-export"
     du_provider: Literal["meralco", "veco", "dlpc", "generic_coop"] = "meralco"
     load_profile: Literal["aircon_day", "evening_peak", "flat"] = "aircon_day"
+    appliances: list[Appliance] = Field(default_factory=list, max_length=30, description="optional; overrides load_profile")
     monthly_bill: Optional[float] = Field(None, gt=0)
     monthly_kwh: Optional[float] = Field(None, gt=0)
     lat: float = Field(14.5995, ge=-90, le=90)
@@ -56,7 +82,7 @@ class SimRequest(BaseModel):
     battery_kwh: Optional[float] = Field(None, ge=0, description="blank = auto-size")
     autonomy_days: float = Field(1, ge=0.5, le=5)
     battery_roundtrip_eff: float = Field(0.90, gt=0, le=1)
-    battery_usable_fraction: float = Field(0.80, gt=0, le=1)
+    battery_cutoff_pct: float = Field(20, ge=0, lt=80, description="discharge stops at this % state of charge")
     retail_rate: Optional[float] = Field(None, gt=0)
     export_rate: Optional[float] = Field(None, ge=0)
     cost_per_kw_php: float = Field(45_000, gt=0)
@@ -100,7 +126,7 @@ def hourly_yield(req):
         return [s * k for _ in range(365) for s in shape], "FALLBACK synthetic 4.5 PSH day (PVGIS unavailable)"
 
 
-def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid):
+def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid, cut=0.0):
     e, cap = sqrt(rt), bat_kwh * usable
     soc = cap * 0.5
     daily = monthly_kwh * 12 / 365
@@ -138,7 +164,7 @@ def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid):
                 else:
                     r["grid_import"] += l
                     dd["grid"][h] += l
-                dd["soc"][h] += (soc / cap * 100) if cap else 0.0
+                dd["soc"][h] += (cut + soc / cap * (100 - cut)) if cap else 0.0
         for k in ("pv", "load", "soc", "grid"):
             day[m][k] = [round(v / days, 3) for v in day[m][k]]
     return mon, day
@@ -162,7 +188,7 @@ def simulate(req: SimRequest):
     rates = DU_RATES[req.du_provider]
     retail = req.retail_rate or rates["retail"]
     exp_rate = req.export_rate if req.export_rate is not None else rates["blended_export"]
-    prof = PROFILES[req.load_profile]
+    usable = 1 - req.battery_cutoff_pct / 100
     grid = {"grid-tied": "export", "hybrid-export": "export", "hybrid-no-export": "zero", "off-grid": "offgrid"}[req.topology]
     notes = [f"Tariffs as of: {TARIFFS_AS_OF}"]
 
@@ -172,6 +198,14 @@ def simulate(req: SimRequest):
         notes.append("kWh estimated as bill / retail rate; prefer monthly_kwh")
     annual = monthly_kwh * 12
     daily = annual / 365
+    peak_run = surge_extra = None
+    if req.appliances:
+        prof, peak_run, surge_extra, app_kwh, base = appliance_profile(req.appliances, daily)
+        notes.append(f"Appliance list covers {app_kwh:.1f} kWh/day ({app_kwh / daily * 100:.0f}% of your {daily:.1f} kWh/day); the rest is a flat baseline of {base:.1f} kWh/day")
+        if app_kwh > daily * 1.05:
+            notes.append("Appliance list exceeds your monthly kWh: hours or watts are probably overestimated. Energy was scaled down to match your bill, but the inverter is sized from the listed loads")
+    else:
+        prof = PROFILES[req.load_profile]
     day_frac = sum(prof[h] for h in SUN)
 
     pv, src = hourly_yield(req)
@@ -184,9 +218,9 @@ def simulate(req: SimRequest):
     elif req.battery_kwh is not None:
         bat = req.battery_kwh
     elif req.topology == "off-grid":
-        bat = daily * req.autonomy_days / req.battery_usable_fraction
+        bat = daily * req.autonomy_days / usable
     else:
-        bat = daily * (1 - day_frac) / (req.battery_usable_fraction * req.battery_roundtrip_eff)
+        bat = daily * (1 - day_frac) / (usable * req.battery_roundtrip_eff)
     bat = round(bat * 2) / 2 if bat else 0.0
 
     # PV size (whole panels)
@@ -199,11 +233,14 @@ def simulate(req: SimRequest):
     kw = panels * req.panel_watts / 1000
 
     # inverter: surge-aware (1.5x peak hour) but never below array/1.25
-    peak_kw = daily * max(prof)
-    inv_kw = max(1, ceil(max(peak_kw * 1.5, kw / 1.25)))
+    if peak_run is not None:
+        inv_kw = max(1, ceil(max((peak_run + surge_extra) * 1.1, kw / 1.25)))
+        notes.append(f"Inverter sized for peak running load {peak_run:.1f} kW + largest start surge {surge_extra:.1f} kW (+10% margin)")
+    else:
+        inv_kw = max(1, ceil(max(daily * max(prof) * 1.5, kw / 1.25)))
 
     mon, day = dispatch(pv, kw, monthly_kwh, prof, bat, req.battery_roundtrip_eff,
-                        req.battery_usable_fraction, inv_kw, grid)
+                        usable, inv_kw, grid, req.battery_cutoff_pct)
     rows = []
     for m, r in enumerate(mon):
         sav = (r["direct"] + r["discharge"]) * retail + r["export"] * exp_rate
@@ -218,15 +255,16 @@ def simulate(req: SimRequest):
     if pay is None:
         notes.append(f"No payback within {req.years} years under these assumptions")
     if bat:
+        notes.append(f"Battery discharge stops at {req.battery_cutoff_pct:g}% state of charge ({100 - req.battery_cutoff_pct:g}% of nominal kWh is usable)")
         notes.append("Battery replacement is not modeled")
     if req.topology == "off-grid":
         notes.append("Off-grid: savings = avoided grid energy; unserved load needs a generator or a larger system")
-    notes.append(f"Load profile: {req.load_profile}, {round(day_frac * 100)}% of use in daylight hours; flat across months")
+    notes.append(f"Load profile: {'custom (appliance list)' if req.appliances else req.load_profile}, {round(day_frac * 100)}% of use in daylight hours; flat across months")
 
     return {
         "summary": {
             "topology": req.topology, "system_kw": round(kw, 2), "panel_count": panels, "panel_watts": req.panel_watts,
-            "battery_kwh": bat, "inverter_kw": inv_kw, "specific_yield_kwh_per_kwp": round(spec_yield),
+            "battery_kwh": bat, "battery_cutoff_pct": req.battery_cutoff_pct, "peak_running_kw": round(peak_run, 2) if peak_run is not None else None, "inverter_kw": inv_kw, "specific_yield_kwh_per_kwp": round(spec_yield),
             "annual_generation_kwh": round(gen), "solar_coverage_pct": round(100 * onsite / annual, 1),
             "self_consumption_pct": round(100 * onsite / gen, 1) if gen else 0,
             "unserved_kwh": round(sum(r["unserved"] for r in rows)),
