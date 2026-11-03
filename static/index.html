@@ -36,7 +36,8 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div id="appRows"></div>
 <div class="r"><select id="preset"></select><button type="button" style="margin:0;padding:6px" onclick="addApp()">Add</button></div></details>
 <div class="r"><label>Battery kWh (blank = auto)<input id="battery_kwh" type="number" step="any"></label><label>Autonomy (days)<input id="autonomy_days" type="number" value="1" step="any"></label>
-<label>Battery cutoff (% SOC)<input id="battery_cutoff_pct" type="number" step="any" min="0" max="79" value="20"></label></div>
+<label>Battery cutoff (% SOC)<input id="battery_cutoff_pct" type="number" step="any" min="0" max="79" value="20"></label>
+<label>Battery type / module<select id="batMod"></select></label></div>
 <div class="r"><label>Latitude<input id="lat" type="number" step="any" value="14.5995"></label><label>Longitude<input id="lon" type="number" step="any" value="120.9842"></label></div>
 <details><summary>Panel &amp; wiring</summary>
 <div class="r"><label>Panel W<input id="panel_watts" type="number" value="450"></label><label>I<sub>sc</sub> (A)<input id="iSc" type="number" step="any" value="13.8"></label>
@@ -94,7 +95,13 @@ function design(s){
  const maxS=Math.max(1,Math.floor(maxV/(voc*1.12))),strings=Math.ceil(s.panel_count/maxS),series=Math.ceil(s.panel_count/strings),panels=strings*series;
  const Vs=vmp*series,Isc=iSc*strings,iv=s.inverter_kw;
  const pvB=brk(Isc*1.56,[10,15,20,25,30,40,50,63,80,100,125]),pvW=wire(area(Isc*1.25,pvD,Vs,dp),pvB);
- const bI=iv*1000/48*1.25,bB=bat?brk(bI,[80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,48,dp),bB):null;
+ let BP=null,bn=[];if(bat){BP=pickBattery(s.battery_kwh,iv);
+  bn.push(`Battery: ${BP.qty} × ${BP.M.n} → ${BP.inst.toFixed(2)} kWh installed on a ${BP.V} V bus (${BP.ser} in series × ${BP.par} in parallel)`);
+  if(BP.V<48&&iv>3)bn.push(`A ${BP.V} V battery bus for a ${iv} kW inverter means very high DC current; a 48 V system is strongly preferred`);
+  if(BP.par>4)bn.push(`${BP.par} strings in parallel: confirm the battery maker's parallel limit, or use a higher-voltage or larger module`);
+  if(BP.V<48&&maxV>150)bn.push(`${BP.V} V inverters and charge controllers usually accept only about 100–150 V of PV; set the inverter max PV voltage field to match`);
+  if(BP.M.lead)bn.push("Lead-acid: 50% cutoff and about 80% round-trip efficiency were used. Expect a shorter life than LiFePO4, plus ventilation and maintenance")}
+ const bV=BP?BP.V:48,bI=iv*1000/bV*1.25,bB=bat?brk(bI,[40,50,63,80,100,125,150,175,200,250,300,400]):0,bW=bat?wire(area(bI,batD,bV,dp),bB):null;
  const aI=iv*1000/230*1.25,aB=brk(aI,[15,20,30,40,50,60,80,100,125]),aW=wire(area(aI/1.25,acD,230,dp),aB);
  const rows=Math.ceil(strings*Math.ceil(series/12)),m=n=>Math.ceil(n);
  const run=(len,w,n)=>({len:m(len*1.1),sz:conduit(w.mm,n)});
@@ -106,7 +113,7 @@ function design(s){
  ["PV cable",`${pvW.t}, UV, red + black`,`${m(pvD*2+(strings>1?strings*20:0))} m`],["MC4 connectors","IP67 pairs",`${strings*2+4} pairs`],
  [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
  ["DC isolator / breaker",`${pvB} A, 1000 V DC`,"1 unit"],["DC surge protector","Type 2, 1000 V DC","1 unit"]];
- if(bat)L.push(["Battery storage","48 V LiFePO4, 5.12 kWh modules; set inverter low-battery cutoff to match",`${m(s.battery_kwh/5.12)} unit(s)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
+ if(bat)L.push(["Battery storage",`${BP.M.v} V ${BP.M.lead?"lead-acid":"LiFePO4"} ${BP.M.ah} Ah, ${BP.M.kwh} kWh each; ${BP.V} V bus; set inverter low-battery cutoff to match`,`${BP.qty} unit(s) (${BP.ser}S${BP.par}P)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
   ["Battery cable",`${bW.t}, flexible, red + black`,`${m(batD*2)} m`],["Battery lugs & busbar","tinned copper, heat-shrink","1 lot"]);
  L.push(["AC breaker",`${aB} A, 2-pole 230 V`,"1 unit"],["AC surge protector","Type 2, 230 V","1 unit"],["AC cable",`${aW.t}, L + N + PE`,`${m(acD*3)} m`],
   ["Breaker box (MDB)",`surface/flush, ≥ 8-way, with ${aB} A main`,"1 unit"]);
@@ -118,7 +125,7 @@ function design(s){
  L.push(["Conduit: AC run",`${cA.sz} PVC/EMT, 3 m lengths`,`${m(cA.len/3)} pcs`],
   ["Conduit fittings","elbows, couplings, adapters, pull boxes",`${m((cP.len+(cB?cB.len:0)+cA.len)/3)*2} pcs`],["Conduit clamps / saddles","spaced ~1 m",`${m(cP.len+(cB?cB.len:0)+cA.len)} pcs`],
   ["Ground rod + clamp","5/8″ × 2.4 m copper-bonded","1 set"],["Ground wire","6 mm² green/yellow",`${m(pvD+acD+6)} m`],["Cable glands, ties, labels","UV ties, warning signs, labels","1 lot"]);
- return{panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
+ return{V:bV,instKwh:BP?+BP.inst.toFixed(2):0,bn,panelW:s.panel_watts,batKwh:s.battery_kwh,strings,series,panels,Vs,vocC:voc*1.12*series,Isc,pvB,pvW,bB,bW,aB,aW,cP,cB,cA,L,bat,grid,exp,zero,iv,pvD,batD,acD}}
 // ---- drawings ----
 function box(x,y,w,h,t,sub){return`<rect class="bx" x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/><text x="${x+w/2}" y="${y+h/2-(sub?2:-4)}" text-anchor="middle" font-weight="600">${t}</text>${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${sub}</text>`:""}`}
 const ln=(a,b,c,d,t,tx,ty)=>`<path class="ln" d="M${a} ${b}L${c} ${d}"/>${t?`<text x="${tx}" y="${ty}" text-anchor="middle" style="font-size:10px;fill:var(--mu)">${t}</text>`:""}`;
@@ -127,7 +134,7 @@ function sld(d){let h="",y=95,x=10;
  h+=box(175,y,110,60,d.strings>1?"Combiner box":"Junction box",d.strings>1?"string fuses":"IP65")+ln(285,125,325,125);
  h+=box(325,y,100,60,"DC isolator",d.pvB+" A")+ln(425,125,465,125);
  h+=box(465,y,110,60,"Inverter",d.iv+" kW");
- if(d.bat){h+=ln(520,155,520,215,d.bW.t.split(" ")[0]+" mm²",562,190)+box(465,215,110,50,"Battery","48 V, "+d.batKwh+" kWh")+box(330,220,100,40,"Batt. breaker",d.bB+" A")+ln(430,240,465,240)}
+ if(d.bat){h+=ln(520,155,520,215,d.bW.t.split(" ")[0]+" mm²",562,190)+box(465,215,110,50,"Battery",d.V+" V, "+d.instKwh+" kWh")+box(330,220,100,40,"Batt. breaker",d.bB+" A")+ln(430,240,465,240)}
  {h+=ln(575,125,615,125)+box(615,y,100,60,"AC breaker + SPD",d.aB+" A")+ln(715,125,745,125)+box(745,y,140,60,"Breaker box (MDB)","loads")}
  if(d.grid){h+=ln(815,95,815,55)+box(745,15,140,40,"Utility box / meter",d.exp?"bi-directional":"service disconnect")+ln(815,15,815,5,"")}
  else h+=ln(815,155,815,215)+box(745,215,140,40,"Generator ATS","");
@@ -141,7 +148,7 @@ function arr(d){const pw=num("panL",2.28),ph=num("panW",1.13),per=Math.min(d.ser
 // ---- buy links (search links, not specific products) ----
 const QO={"Mid / end clamps":"solar panel mid clamp end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","MC4 connectors":"MC4 solar connector pair","PV combiner box":"PV combiner box","PV junction box":"solar PV junction box IP65","DC surge protector":"DC surge protector 1000V solar","Battery lugs & busbar":"battery cable lug busbar","AC surge protector":"AC surge protector 230V","Breaker box (MDB)":"circuit breaker panel board","Utility box":"electrical meter box enclosure","Conduit clamps / saddles":"PVC conduit pipe clamp","Ground rod + clamp":"copper bonded ground rod","Cable glands, ties, labels":"cable gland UV cable ties","Zero-export CT sensor":"split core CT sensor 100A","Generator ATS":"automatic transfer switch","Conduit fittings":"PVC conduit fittings elbow coupling"};
 function qry(r){const n=(r[1].match(/^[\d.]+/)||[""])[0],A=r[1].split(" ")[0]+"A";
- return r[0]==="Inverter"?r[1].split(",")[0]+" solar inverter":r[0]==="PV cable"?n+"mm2 solar PV cable":r[0]==="Battery cable"?n+"mm2 flexible battery cable":r[0]==="AC cable"?n+"mm2 THHN wire":
+ return r[0]==="Battery storage"?r[1].split(",")[0]+" battery":r[0]==="Inverter"?r[1].split(",")[0]+" solar inverter":r[0]==="PV cable"?n+"mm2 solar PV cable":r[0]==="Battery cable"?n+"mm2 flexible battery cable":r[0]==="AC cable"?n+"mm2 THHN wire":
  r[0].startsWith("Conduit:")?"PVC electrical conduit "+((r[1].match(/\((\d+) mm\)/)||[0,""])[1])+"mm":r[0]==="DC isolator / breaker"?A+" DC isolator switch 1000V":r[0]==="Battery breaker / fuse"?A+" DC MCCB breaker":r[0]==="AC breaker"?A+" 2 pole circuit breaker":QO[r[0]]||null}
 function buy(r){const q=encodeURIComponent(qry(r)||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim());
  const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;
@@ -178,6 +185,17 @@ let APP=[];
 $("preset").innerHTML=Object.keys(PRE).map(n=>`<option>${n}</option>`).join("");
 function addApp(){const n=$("preset").value,p=PRE[n];APP.push({name:n,watts:p[0],qty:p[1],hours:p[2],start:p[3],surge:p[4]});drawApps()}
 function drawApps(){$("appRows").innerHTML=APP.map((a,i)=>`<div class="app"><div class="r" style="grid-template-columns:1fr auto"><input value="${a.name.replace(/"/g,"&quot;")}" oninput="APP[${i}].name=this.value"><button type="button" style="margin:0;padding:2px 9px;width:auto" onclick="APP.splice(${i},1);drawApps()">×</button></div><div class="r5">${[["watts","W"],["qty","Qty"],["hours","h/day"],["start","Start h"],["surge","Surge ×"]].map(([k,l])=>`<label>${l}<input type="number" step="any" value="${a[k]}" oninput="APP[${i}].${k}=parseFloat(this.value)||0"></label>`).join("")}</div></div>`).join("")}
+// ---- battery modules ----
+const MODS=[{n:"12.8 V 100 Ah LiFePO4 (1.28 kWh)",v:12.8,ah:100,kwh:1.28},{n:"25.6 V 100 Ah LiFePO4 (2.56 kWh)",v:25.6,ah:100,kwh:2.56},{n:"51.2 V 50 Ah LiFePO4 (2.56 kWh)",v:51.2,ah:50,kwh:2.56},{n:"51.2 V 100 Ah LiFePO4 (5.12 kWh)",v:51.2,ah:100,kwh:5.12},{n:"51.2 V 200 Ah LiFePO4 (10.24 kWh)",v:51.2,ah:200,kwh:10.24},{n:"12 V 100 Ah lead-acid / AGM / gel (1.2 kWh)",v:12,ah:100,kwh:1.2,lead:1}];
+$("batMod").innerHTML='<option value="auto">Auto (by inverter size)</option>'+MODS.map((m,i)=>`<option value="${i}">${m.n}</option>`).join("");
+$("batMod").addEventListener("change",()=>{const i=$("batMod").value;$("battery_cutoff_pct").value=i!=="auto"&&MODS[+i].lead?50:20});
+function pickBattery(kwh,iv){
+ const sel=$("batMod").value;let M;
+ if(sel!=="auto")M=MODS[+sel];
+ else if(iv<=1)M=MODS[0];else if(iv<=3)M=MODS[1];
+ else{M=[MODS[2],MODS[3],MODS[4]].map(m=>({m,inst:Math.ceil(kwh/m.kwh)*m.kwh})).sort((a,b)=>a.inst-b.inst||b.m.kwh-a.m.kwh)[0].m}
+ const V=M.v>40?48:M.v>20?24:(iv<=1?12:iv<=3?24:48),ser=M.v>20?1:Math.round(V/12),par=Math.max(1,Math.ceil(kwh/(M.kwh*ser)));
+ return{M,V,ser,par,qty:par*ser,inst:par*ser*M.kwh}}
 // ---- render ----
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
 function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
@@ -190,13 +208,14 @@ function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
  $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
  table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC (array → inverter)",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC (inverter → panel)",x.aB+" A AC",x.aW.t,x.cA.sz]]);
  table("bom",["Item","Specification","Qty","Where to buy"],x.L.map(r=>[...r,buy(r)]));sld(x);arr(x);
- $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false;layoutRoof()}
+ $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...x.bn,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false;layoutRoof()}
 $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
  for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","battery_cutoff_pct","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
  if(b.monthly_kwh&&b.monthly_bill)delete b.monthly_bill;
  const ap=APP.filter(a=>a.watts>0&&a.hours>0).map(a=>({name:a.name,watts:a.watts,qty:Math.max(1,Math.round(a.qty)||1),hours:Math.min(24,a.hours),start:Math.max(0,Math.min(23,Math.round(a.start)||0)),surge:Math.max(1,a.surge||1)}));if(ap.length)b.appliances=ap;
+ const bm=$("batMod").value;if(bm!=="auto"&&MODS[+bm].lead)b.battery_roundtrip_eff=0.8;
  $("go").disabled=true;try{const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}),d=await r.json();
   if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):"Request failed");render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>
