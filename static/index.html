@@ -21,7 +21,7 @@ button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:6px;backgr
 .s{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:10px}.s b{display:block;font-size:18px}.s span{font-size:11px;color:var(--mu)}
 .ch{height:250px;position:relative}table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:5px 6px;border-bottom:1px solid var(--ln);text-align:left}th{color:var(--mu);font-weight:600}
-.note{color:var(--mu);font-size:12px;margin:4px 0 0;padding-left:16px}a{color:var(--ac)}.err{color:#dc2626;margin-top:8px}
+.note{color:var(--mu);font-size:12px;margin:4px 0 0;padding-left:16px}a{color:var(--ac)}.app{border:1px solid var(--ln);border-radius:6px;padding:6px;margin-top:6px}.app .r5{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}.app label{margin:2px 0 0;font-size:10px}.app input{padding:4px}.err{color:#dc2626;margin-top:8px}
 svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}.ln{stroke:var(--mu);stroke-width:1.5;fill:none}
 </style></head><body><main>
 <h1>PV Designer</h1>
@@ -29,9 +29,14 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <form class="c" id="f">
 <label>System type<select id="topology"><option value="hybrid-no-export">Hybrid, zero export</option><option value="hybrid-export">Hybrid, export</option><option value="grid-tied">Grid-tied (net metering)</option><option value="off-grid">Off-grid</option></select></label>
 <div class="r"><label>Utility<select id="du_provider"><option value="meralco">Meralco</option><option value="veco">VECO</option><option value="dlpc">DLPC</option><option value="generic_coop">Generic coop</option></select></label>
-<label>Load profile<select id="load_profile"><option value="aircon_day">Daytime aircon</option><option value="evening_peak">Evening peak</option><option value="flat">Flat</option></select></label></div>
+<label>Load profile (if no appliances)<select id="load_profile"><option value="aircon_day">Daytime aircon</option><option value="evening_peak">Evening peak</option><option value="flat">Flat</option></select></label></div>
 <div class="r"><label>Monthly kWh<input id="monthly_kwh" type="number" value="550"></label><label>or bill (₱)<input id="monthly_bill" type="number"></label></div>
-<div class="r"><label>Battery kWh (blank = auto)<input id="battery_kwh" type="number" step="any"></label><label>Autonomy (days)<input id="autonomy_days" type="number" value="1" step="any"></label></div>
+<details id="appBox"><summary>Appliances &amp; usage times (optional)</summary>
+<p class="note" style="margin:6px 0">Enter running watts from the nameplate, hours per day, and the hour it starts. Surge × is the start-up multiple (inverter aircon ≈ 2, non-inverter ≈ 4). Presets are typical values: edit them. Leave empty to use the load profile.</p>
+<div id="appRows"></div>
+<div class="r"><select id="preset"></select><button type="button" style="margin:0;padding:6px" onclick="addApp()">Add</button></div></details>
+<div class="r"><label>Battery kWh (blank = auto)<input id="battery_kwh" type="number" step="any"></label><label>Autonomy (days)<input id="autonomy_days" type="number" value="1" step="any"></label>
+<label>Battery cutoff (% SOC)<input id="battery_cutoff_pct" type="number" step="any" min="0" max="79" value="20"></label></div>
 <div class="r"><label>Latitude<input id="lat" type="number" step="any" value="14.5995"></label><label>Longitude<input id="lon" type="number" step="any" value="120.9842"></label></div>
 <details><summary>Panel &amp; wiring</summary>
 <div class="r"><label>Panel W<input id="panel_watts" type="number" value="450"></label><label>I<sub>sc</sub> (A)<input id="iSc" type="number" step="any" value="13.8"></label>
@@ -101,7 +106,7 @@ function design(s){
  ["PV cable",`${pvW.t}, UV, red + black`,`${m(pvD*2+(strings>1?strings*20:0))} m`],["MC4 connectors","IP67 pairs",`${strings*2+4} pairs`],
  [strings>1?"PV combiner box":"PV junction box",strings>1?`IP65, ${strings} inputs${strings>=3?", string fuses":""}`:"IP65 roof-side, weatherproof","1 unit"],
  ["DC isolator / breaker",`${pvB} A, 1000 V DC`,"1 unit"],["DC surge protector","Type 2, 1000 V DC","1 unit"]];
- if(bat)L.push(["Battery storage","48 V LiFePO4, 5.12 kWh modules",`${m(s.battery_kwh/5.12)} unit(s)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
+ if(bat)L.push(["Battery storage","48 V LiFePO4, 5.12 kWh modules; set inverter low-battery cutoff to match",`${m(s.battery_kwh/5.12)} unit(s)`],["Battery breaker / fuse",`${bB} A DC MCCB or class-T fuse + holder`,"1 set"],
   ["Battery cable",`${bW.t}, flexible, red + black`,`${m(batD*2)} m`],["Battery lugs & busbar","tinned copper, heat-shrink","1 lot"]);
  L.push(["AC breaker",`${aB} A, 2-pole 230 V`,"1 unit"],["AC surge protector","Type 2, 230 V","1 unit"],["AC cable",`${aW.t}, L + N + PE`,`${m(acD*3)} m`],
   ["Breaker box (MDB)",`surface/flush, ≥ 8-way, with ${aB} A main`,"1 unit"]);
@@ -167,12 +172,18 @@ function layoutRoof(){
  let A=0;P.forEach((a,i)=>{const b=P[(i+1)%P.length];A+=a[0]*b[1]-b[0]*a[1]});A=Math.abs(A)/2;
  $("roofSt").textContent=`Roof ≈ ${A.toFixed(0)} m². ${use.length} of ${N} panels fit.`+(use.length<N?` This roof holds at most ${cand.length} panels (≈ ${(cand.length*(LASTX.panelW||0)/1000).toFixed(1)} kWp). Draw a larger area, reduce setback, or lower the target offset.`:" Colors show strings.")+" Plan view: on a pitched roof, panels are slightly shorter along the slope."}
 document.addEventListener("change",e=>{if(e.target.closest&&e.target.closest(".tools"))layoutRoof()});
+// ---- appliances ----
+const PRE={"Aircon 1.0 hp inverter":[800,1,8,21,2],"Aircon 1.5 hp inverter":[1100,1,8,21,2],"Aircon 1.0 hp non-inverter":[900,1,8,21,4],"Refrigerator":[150,1,24,0,4],"Water pump 0.5 hp":[400,1,2,6,3],"Electric shower heater":[3500,1,0.5,6,1],"Washing machine":[500,1,1,9,2],"Rice cooker":[700,1,1,18,1],"Microwave / oven":[1200,1,0.5,18,1],"Lights, TV, electronics":[300,1,6,18,1],"EV charger (3.3 kW)":[3300,1,3,22,1]};
+let APP=[];
+$("preset").innerHTML=Object.keys(PRE).map(n=>`<option>${n}</option>`).join("");
+function addApp(){const n=$("preset").value,p=PRE[n];APP.push({name:n,watts:p[0],qty:p[1],hours:p[2],start:p[3],surge:p[4]});drawApps()}
+function drawApps(){$("appRows").innerHTML=APP.map((a,i)=>`<div class="app"><div class="r" style="grid-template-columns:1fr auto"><input value="${a.name.replace(/"/g,"&quot;")}" oninput="APP[${i}].name=this.value"><button type="button" style="margin:0;padding:2px 9px;width:auto" onclick="APP.splice(${i},1);drawApps()">×</button></div><div class="r5">${[["watts","W"],["qty","Qty"],["hours","h/day"],["start","Start h"],["surge","Surge ×"]].map(([k,l])=>`<label>${l}<input type="number" step="any" value="${a[k]}" oninput="APP[${i}].${k}=parseFloat(this.value)||0"></label>`).join("")}</div></div>`).join("")}
 // ---- render ----
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
 function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
- charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},{label:"Battery %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{position:"right",min:0,max:100,grid:{drawOnChartArea:false}}}}})}
+ charts[2]&&charts[2].destroy();charts[2]=new Chart($("c3"),{type:"line",data:{labels:lb,datasets:[{label:"Solar kW",data:t.pv,borderColor:"#f59e0b",pointRadius:0},{label:"Load kW",data:t.load,borderColor:"#2563eb",pointRadius:0},{label:"Grid import kW",data:t.grid,borderColor:"#9ca3af",pointRadius:0},{label:"Battery SOC %",data:t.soc,borderColor:"#10b981",borderDash:[4,3],pointRadius:0,yAxisID:"y2"},{label:"Cutoff %",data:Array(24).fill(D.summary.battery_cutoff_pct),borderColor:"#ef4444",borderDash:[2,4],pointRadius:0,yAxisID:"y2"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:"kW"}},y2:{position:"right",min:0,max:100,grid:{drawOnChartArea:false}}}}})}
 function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
- $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW","Inverter"],[s.battery_kwh+" kWh","Battery"],[s.solar_coverage_pct+"%","Load from solar"],[php(s.year1_savings_php),"Year-1 savings"],[php(s.total_cost_php),"Total cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
+ $("st").innerHTML=[[s.system_kw+" kW",`${x.panels} × ${s.panel_watts} W`],[s.inverter_kw+" kW",s.peak_running_kw?`Inverter (peak ${s.peak_running_kw} kW running)`:"Inverter"],[s.battery_kwh+" kWh","Battery, "+(100-s.battery_cutoff_pct)+"% usable"],[s.solar_coverage_pct+"%","Load from solar"],[php(s.year1_savings_php),"Year-1 savings"],[php(s.total_cost_php),"Total cost"],[s.payback_years===null?"None":s.payback_years+" yr","Payback"]].map(a=>`<div class="s"><b>${a[0]}</b><span>${a[1]}</span></div>`).join("");
  charts.forEach(c=>c&&c.destroy());const m=d.monthly,lb=m.map(r=>r.month);
  charts[0]=new Chart($("c1"),{type:"bar",data:{labels:lb,datasets:[["Direct use","direct","#f59e0b"],["Battery","discharge","#10b981"],["Exported","export","#60a5fa"],["Curtailed","curtail","#9ca3af"],["Grid import","grid_import","#6b7280"]].map(a=>({label:a[0],data:m.map(r=>r[a[1]]),backgroundColor:a[2]}))},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}}}});
  charts[1]=new Chart($("c2"),{type:"line",data:{labels:d.cash_flow.map(r=>r.year),datasets:[{label:"Cumulative ₱",data:d.cash_flow.map(r=>r.cumulative_php),borderColor:"#2563eb",backgroundColor:"#2563eb33",fill:true,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false}});
@@ -183,8 +194,9 @@ function render(d){D=d;const s=d.summary,x=design(s);LASTX=x;
 $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
- for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
+ for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","battery_cutoff_pct","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
  if(b.monthly_kwh&&b.monthly_bill)delete b.monthly_bill;
+ const ap=APP.filter(a=>a.watts>0&&a.hours>0).map(a=>({name:a.name,watts:a.watts,qty:Math.max(1,Math.round(a.qty)||1),hours:Math.min(24,a.hours),start:Math.max(0,Math.min(23,Math.round(a.start)||0)),surge:Math.max(1,a.surge||1)}));if(ap.length)b.appliances=ap;
  $("go").disabled=true;try{const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}),d=await r.json();
   if(!r.ok)throw new Error(Array.isArray(d.detail)?d.detail.map(x=>x.loc.slice(-1)+": "+x.msg).join("; "):"Request failed");render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>
