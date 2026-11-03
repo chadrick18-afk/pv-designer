@@ -113,6 +113,8 @@ class SimRequest(BaseModel):
     tariff_escalation_pct: float = Field(3.0, ge=0, le=15)
     inverter_replacement_pct: float = Field(8.0, ge=0, le=50)
     years: int = Field(25, ge=1, le=40)
+    pv_run_m: float = Field(25, ge=0, le=500, description="array to inverter cable run (m)")
+    ac_run_m: float = Field(8, ge=0, le=500, description="inverter to breaker panel AC run (m)")
 
     @model_validator(mode="after")
     def need_consumption(self):
@@ -321,7 +323,7 @@ def simulate(req: SimRequest):
     hooks_qty = ceil(panels * 1.5)
     clamps_qty = panels * 2
     cost_mounting = (rails_qty * UNIT_PRICES["rail_4_2m"]) + (hooks_qty * UNIT_PRICES["roof_hook"]) + (clamps_qty * UNIT_PRICES["clamp"])
-    cost_electrical = UNIT_PRICES["protection_lot"] + UNIT_PRICES["conduit_and_grounding"] + (req.pvD * 2 * UNIT_PRICES["pv_cable_per_m"]) + (req.acD * 3 * UNIT_PRICES["ac_cable_per_m"])
+    cost_electrical = UNIT_PRICES["protection_lot"] + UNIT_PRICES["conduit_and_grounding"] + (req.pv_run_m * 2 * UNIT_PRICES["pv_cable_per_m"]) + (req.ac_run_m * 3 * UNIT_PRICES["ac_cable_per_m"])
 
     # Separated Labor & Fees
     cost_labor = p_kw * UNIT_PRICES["standard_labor_per_kw"]

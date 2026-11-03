@@ -216,7 +216,7 @@ function pickBattery(kwh,iv){
 async function post(b){let r,d;
  try{r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})}catch(e){throw new Error("Cannot reach the server.")}
  try{d=await r.json()}catch(e){throw new Error("Server error")}
- if(!r.ok)throw new Error("Request failed");d._req=b;return d}
+ if(!r.ok)throw new Error("Request failed ("+r.status+"): "+(typeof d.detail==="string"?d.detail:JSON.stringify(d.detail||d)));d._req=b;return d}
 
 async function reconcile(d){for(let i=0;i<3;i++){const s=d.summary,x=design(s),bm=x.bat&&Math.abs(x.instKwh-s.battery_kwh)>0.005;if(x.panels===s.panel_count&&!bm)break;
  const b2={...d._req,system_kw:x.panels*s.panel_watts/1000};if(x.bat)b2.battery_kwh=x.instKwh;
@@ -245,5 +245,6 @@ $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
  for(const id of["topology","du_provider","load_profile"])b[id]=$(id).value;
  for(const id of["monthly_kwh","monthly_bill","battery_kwh","autonomy_days","battery_cutoff_pct","lat","lon","tilt","azimuth","panel_watts","cost_per_kw_php","battery_cost_per_kwh_php","tariff_escalation_pct","target_offset"]){const v=$(id).value;if(v!=="")b[id]=Number(v)}
+ b.pv_run_m=num("pvD",25);b.ac_run_m=num("acD",8);
  $("go").disabled=true;try{let d=await post(b);d=await reconcile(d);render(d)}catch(x){$("err").textContent=x.message}$("go").disabled=false});
 </script></body></html>
