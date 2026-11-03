@@ -14,14 +14,14 @@ main{max-width:1200px;margin:auto;padding:16px}h1{font-size:21px;margin:0 0 12px
 .c{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:14px;margin-bottom:14px}
 label{display:block;font-size:12px;color:var(--mu);margin:8px 0 2px}
 input,select{width:100%;padding:6px 8px;border:1px solid var(--ln);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
-.r{display:grid;grid-template-columns:1fr 1fr;gap:8px}#map{height:150px;border-radius:8px;margin-top:8px}
+.r{display:grid;grid-template-columns:1fr 1fr;gap:8px}#map{height:210px;border-radius:8px;margin-top:8px}
 details{margin-top:10px}summary{cursor:pointer;color:var(--mu)}
 button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--ac);color:#111;font:600 15px inherit;cursor:pointer}
 .st{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-bottom:14px}
 .s{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:10px}.s b{display:block;font-size:18px}.s span{font-size:11px;color:var(--mu)}
 .ch{height:250px;position:relative}table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:5px 6px;border-bottom:1px solid var(--ln);text-align:left}th{color:var(--mu);font-weight:600}
-.note{color:var(--mu);font-size:12px;margin:4px 0 0;padding-left:16px}.err{color:#dc2626;margin-top:8px}
+.note{color:var(--mu);font-size:12px;margin:4px 0 0;padding-left:16px}a{color:var(--ac)}.err{color:#dc2626;margin-top:8px}
 svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}.ln{stroke:var(--mu);stroke-width:1.5;fill:none}
 </style></head><body><main>
 <h1>PV Designer</h1>
@@ -52,7 +52,7 @@ svg text{fill:var(--tx);font:11px system-ui}.bx{fill:var(--bx);stroke:var(--mu)}
 <div class="c"><h2>Typical day <select id="mon" style="width:auto;display:inline"></select></h2><div class="ch"><canvas id="c3"></canvas></div></div>
 <div class="c"><h2>Cumulative cash flow (₱)</h2><div class="ch"><canvas id="c2"></canvas></div></div>
 <div class="c"><h2>Protection &amp; wire</h2><table id="prot"></table><p class="note">Wire = larger of voltage-drop and breaker-ampacity size (approximate derated values). Verify against PEC / NEC 690; a licensed engineer must approve.</p></div>
-<div class="c"><h2>Bill of materials</h2><table id="bom"></table></div>
+<div class="c"><h2>Bill of materials</h2><table id="bom"></table><p class="note">Buy links are searches, not specific products. Panels, inverters, batteries, and protection devices should come from an authorized dealer with warranty and proper certification. Compare prices and confirm ratings against the table above.</p></div>
 <div class="c"><h2>Draft layout: single-line</h2><div style="overflow-x:auto"><svg id="sld" width="900" height="330"></svg></div></div>
 <div class="c"><h2>Draft layout: array</h2><div style="overflow-x:auto" id="arr"></div></div>
 <div class="c"><ul class="note" id="notes"></ul></div>
@@ -63,7 +63,7 @@ function num(id,d){const v=parseFloat($(id).value);return Number.isFinite(v)&&v>
 const php=n=>"₱"+Math.round(n).toLocaleString("en-PH");
 // ---- map (optional) ----
 function initMap(){if(typeof L==="undefined"){$("map").style.display="none";return}
- const m=L.map("map").setView([14.6,121],6);L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19}).addTo(m);
+ const m=L.map("map").setView([14.6,121],6);const osm=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}),sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Tiles © Esri"});osm.addTo(m);L.control.layers({Street:osm,Satellite:sat}).addTo(m);
  const k=L.marker([14.5995,120.9842],{draggable:true}).addTo(m);
  const mv=p=>{$("lat").value=p.lat.toFixed(4);$("lon").value=p.lng.toFixed(4)};
  k.on("dragend",e=>mv(e.target.getLatLng()));m.on("click",e=>{k.setLatLng(e.latlng);mv(e.latlng)})}
@@ -125,6 +125,14 @@ function arr(d){const pw=2.28,ph=1.13,per=Math.min(d.series,12),wraps=Math.ceil(
  for(let s=0;s<d.strings;s++)for(let p=0;p<d.series;p++){const r=s*wraps+Math.floor(p/per),c=p%per;h+=`<rect x="${10+c*pw*k}" y="${10+r*ph*k}" width="${pw*k-2}" height="${ph*k-2}" fill="${cols[s%6]}" opacity=".85"/>`}
  for(let s=0;s<d.strings;s++)h+=`<text x="${W-8}" y="${10+s*wraps*ph*k+ph*k/2+4}" text-anchor="end" style="fill:#fff;font-size:10px">S${s+1}</text>`;
  h+=`<text x="10" y="${H-8}" style="font-size:10px;fill:var(--mu)">≈ ${(per*pw).toFixed(1)} m × ${(rows*ph).toFixed(1)} m, ${(d.panels*pw*ph).toFixed(0)} m² of modules (landscape ${pw}×${ph} m). Add ~0.3 m setback and walkway. Draft, not to scale.</text></svg>`;$("arr").innerHTML=h}
+// ---- buy links (search links, not specific products) ----
+const QO={"Mid / end clamps":"solar panel mid clamp end clamp","Roof hooks / feet":"solar panel roof hook","Battery storage":"48V 5.12kWh LiFePO4 server rack battery","MC4 connectors":"MC4 solar connector pair","PV combiner box":"PV combiner box","PV junction box":"solar PV junction box IP65","DC surge protector":"DC surge protector 1000V solar","Battery lugs & busbar":"battery cable lug busbar","AC surge protector":"AC surge protector 230V","Breaker box (MDB)":"circuit breaker panel board","Utility box":"electrical meter box enclosure","Conduit clamps / saddles":"PVC conduit pipe clamp","Ground rod + clamp":"copper bonded ground rod","Cable glands, ties, labels":"cable gland UV cable ties","Zero-export CT sensor":"split core CT sensor 100A","Generator ATS":"automatic transfer switch","Conduit fittings":"PVC conduit fittings elbow coupling"};
+function qry(r){const n=(r[1].match(/^[\d.]+/)||[""])[0],A=r[1].split(" ")[0]+"A";
+ return r[0]==="Inverter"?r[1].split(",")[0]+" solar inverter":r[0]==="PV cable"?n+"mm2 solar PV cable":r[0]==="Battery cable"?n+"mm2 flexible battery cable":r[0]==="AC cable"?n+"mm2 THHN wire":
+ r[0].startsWith("Conduit:")?"PVC electrical conduit "+((r[1].match(/\((\d+) mm\)/)||[0,""])[1])+"mm":r[0]==="DC isolator / breaker"?A+" DC isolator switch 1000V":r[0]==="Battery breaker / fuse"?A+" DC MCCB breaker":r[0]==="AC breaker"?A+" 2 pole circuit breaker":QO[r[0]]||null}
+function buy(r){const q=encodeURIComponent(qry(r)||(r[0]+" "+r[1].split(",")[0]).replace(/[\/()×≥]/g," ").replace(/\s+/g," ").trim());
+ const a=(u,t)=>`<a href="${u}${q}" target="_blank" rel="noopener">${t}</a>`;
+ return a("https://shopee.ph/search?keyword=","Shopee")+" · "+a("https://www.lazada.com.ph/catalog/?q=","Lazada")+" · "+a("https://www.google.com/search?q=","Google")}
 // ---- render ----
 function table(id,head,rows){$(id).innerHTML=`<tr>${head.map(x=>`<th>${x}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(x=>`<td>${x}</td>`).join("")}</tr>`).join("")}
 function day(){if(!D)return;const t=D.typical_day[+$("mon").value],lb=[...Array(24).keys()].map(h=>h+":00"),mu=getComputedStyle(document.body).getPropertyValue("--mu");
@@ -136,7 +144,7 @@ function render(d){D=d;const s=d.summary,x=design(s);
  charts[1]=new Chart($("c2"),{type:"line",data:{labels:d.cash_flow.map(r=>r.year),datasets:[{label:"Cumulative ₱",data:d.cash_flow.map(r=>r.cumulative_php),borderColor:"#2563eb",backgroundColor:"#2563eb33",fill:true,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false}});
  $("mon").innerHTML=lb.map((l,i)=>`<option value="${i}"${i==2?" selected":""}>${l}</option>`).join("");day();
  table("prot",["Circuit","Breaker","Wire","Conduit"],[["PV DC (array → inverter)",x.pvB+" A DC",x.pvW.t,x.cP.sz],...(x.bat?[["Battery DC",x.bB+" A DC",x.bW.t,x.cB.sz]]:[]),["AC (inverter → panel)",x.aB+" A AC",x.aW.t,x.cA.sz]]);
- table("bom",["Item","Specification","Qty"],x.L);sld(x);arr(x);
+ table("bom",["Item","Specification","Qty","Where to buy"],x.L.map(r=>[...r,buy(r)]));sld(x);arr(x);
  $("notes").innerHTML=[`Yield: ${d.assumptions.yield_source}`,`Strings: ${x.strings} × ${x.series}, V<sub>mp</sub> ≈ ${x.Vs.toFixed(0)} V, cold V<sub>oc</sub> ≈ ${x.vocC.toFixed(0)} V`,...d.assumptions.notes].map(n=>`<li>${n}</li>`).join("");$("out").hidden=false}
 $("mon").addEventListener("change",day);
 $("f").addEventListener("submit",async e=>{e.preventDefault();$("err").textContent="";const b={};
