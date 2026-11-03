@@ -4,6 +4,7 @@ Deps: pip install fastapi uvicorn pvlib pandas
 from __future__ import annotations
 
 import calendar
+import time
 from functools import lru_cache
 from math import ceil, pi, sin, sqrt
 from pathlib import Path
@@ -108,23 +109,37 @@ def _pvgis_hourly(lat, lon, tilt, azimuth) -> tuple:
         lat, lon, start=2015, end=2020, raddatabase="PVGIS-ERA5", pvcalculation=True,
         peakpower=1, loss=14, surface_tilt=tilt, surface_azimuth=azimuth, timeout=30)
     p = res[0]["P"] / 1000
+    # worst 3-day stretch vs. that calendar month's normal days (the typical-year mean below hides cloudy spells)
+    dly = p.resample("D").sum()
+    mean_m = dly.groupby(dly.index.month).transform("mean")
+    worst = float((dly.rolling(3).sum() / mean_m.rolling(3).sum()).min())
+    if not (worst == worst):
+        worst = 0.3
+    worst = min(1.0, max(0.05, worst))
     idx = p.index.tz_localize(None) + pd.Timedelta(hours=round(lon / 15))
     g = p.groupby([idx.month, idx.day, idx.hour]).mean()
     lv = g.index.get_level_values
     g = g[~((lv(0) == 2) & (lv(1) == 29))]
     if len(g) != 8760:
         raise ValueError("unexpected PVGIS length")
-    return tuple(float(x) for x in g.tolist())
+    return tuple(float(x) for x in g.tolist()), worst
+
+
+_FAIL: dict = {}  # key -> time of last PVGIS failure; skip retrying for 5 min so an outage doesn't cost 30 s per request
 
 
 def hourly_yield(req):
+    """Returns (hourly kWh/kWp list, source label, worst-3-day sun fraction)."""
     key = (round(req.lat, 2), round(req.lon, 2), round(req.tilt), round(req.azimuth))
-    try:
-        return list(_pvgis_hourly(*key)), "PVGIS-ERA5 hourly (2015-2020 typical year)"
-    except Exception:
-        shape = [max(0.0, sin(pi * (h - 6) / 12)) for h in range(24)]
-        k = 4.5 * 0.86 / sum(shape)
-        return [s * k for _ in range(365) for s in shape], "FALLBACK synthetic 4.5 PSH day (PVGIS unavailable)"
+    if time.monotonic() - _FAIL.get(key, -1e9) > 300:
+        try:
+            vals, worst = _pvgis_hourly(*key)
+            return list(vals), "PVGIS-ERA5 hourly (2015-2020 typical year)", worst
+        except Exception:
+            _FAIL[key] = time.monotonic()
+    shape = [max(0.0, sin(pi * (h - 6) / 12)) for h in range(24)]
+    k = 4.5 * 0.86 / sum(shape)
+    return [s * k for _ in range(365) for s in shape], "FALLBACK synthetic 4.5 PSH day (PVGIS unavailable)", 0.3
 
 
 def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid, cut=0.0):
@@ -171,6 +186,33 @@ def dispatch(pv, kw, monthly_kwh, prof, bat_kwh, rt, usable, power_kw, grid, cut
     return mon, day
 
 
+def stress_test(pv, kw, daily, prof, bat_kwh, rt, usable, power_kw, worst, days=3):
+    """Off-grid cloudy spell: `days` days at `worst` x the normal sun of the lowest-yield month, battery starting full."""
+    sums, i = [], 0
+    for n in DAYS:
+        sums.append(sum(pv[i:i + n * 24]))
+        i += n * 24
+    m = min(range(12), key=lambda k: sums[k] / DAYS[k])
+    start = sum(DAYS[:m]) * 24
+    mean_day = [sum(pv[start + d * 24 + h] for d in range(DAYS[m])) / DAYS[m] for h in range(24)]
+    e, cap = sqrt(rt), bat_kwh * usable
+    soc, unserved = cap, 0.0
+    for _ in range(days):
+        for h in range(24):
+            g, l = mean_day[h] * kw * worst, daily * prof[h]
+            d = min(g, l)
+            g, l = g - d, l - d
+            if cap > 0:
+                if g > 0:
+                    soc += min(g, power_kw, (cap - soc) / e) * e
+                if l > 0:
+                    dis = min(l, power_kw, soc * e)
+                    soc -= dis / e
+                    l -= dis
+            unserved += l
+    return unserved, daily * days, MONTHS[m]
+
+
 def cash_flow(y1, pv_cost, total, req):
     deg, esc, cum, pay, out = req.degradation_pct / 100, req.tariff_escalation_pct / 100, -total, None, []
     for y in range(1, req.years + 1):
@@ -209,7 +251,7 @@ def simulate(req: SimRequest):
         prof = PROFILES[req.load_profile]
     day_frac = sum(prof[h] for h in SUN)
 
-    pv, src = hourly_yield(req)
+    pv, src, worst = hourly_yield(req)
     spec_yield = sum(pv)
 
     # battery
@@ -222,7 +264,7 @@ def simulate(req: SimRequest):
         bat = daily * req.autonomy_days / usable
     else:
         bat = daily * (1 - day_frac) / (usable * req.battery_roundtrip_eff)
-    bat = round(bat * 2) / 2 if bat else 0.0
+    bat = (round(bat * 2) / 2 if req.battery_kwh is None else round(bat, 3)) if bat else 0.0  # only auto-sized values snap to 0.5 kWh
 
     # PV size (whole panels)
     if req.system_kw is None:
@@ -230,7 +272,7 @@ def simulate(req: SimRequest):
         raw = basis * req.target_offset / spec_yield
     else:
         raw = req.system_kw
-    panels = max(1, ceil(raw * 1000 / req.panel_watts))
+    panels = max(1, ceil(round(raw * 1000 / req.panel_watts, 6)))  # round: 8*450/1000*1000/450 must not become 9
     kw = panels * req.panel_watts / 1000
 
     # inverter: surge-aware (1.5x peak hour) but never below array/1.25
@@ -245,6 +287,14 @@ def simulate(req: SimRequest):
 
     mon, day = dispatch(pv, kw, monthly_kwh, prof, bat, req.battery_roundtrip_eff,
                         usable, inv_kw, grid, req.battery_cutoff_pct)
+    stress_pct = stress_kwh = None
+    if req.topology == "off-grid":
+        un, tot, wm = stress_test(pv, kw, daily, prof, bat, req.battery_roundtrip_eff, usable, inv_kw, worst)
+        stress_kwh, stress_pct = round(un, 1), round(100 * un / tot, 1) if tot else 0.0
+        basis_txt = "assumed 30% of normal sun (no PVGIS data)" if src.startswith("FALLBACK") else f"the worst 3-day stretch in the 6-year record gave {worst * 100:.0f}% of normal sun"
+        notes.append(f"Cloudy-spell stress test: {basis_txt}. Applied to {wm} (lowest-yield month) with a full battery, {un:.1f} kWh ({stress_pct:g}% of those 3 days' load) would go unserved. "
+                     + ("Add battery or PV, or plan a generator." if un >= 0.05 else "The design rides it out."))
+        notes.append("The typical-year simulation averages several years, so it understates cloudy spells; rely on the stress test for off-grid autonomy")
     rows = []
     for m, r in enumerate(mon):
         sav = (r["direct"] + r["discharge"]) * retail + r["export"] * exp_rate
@@ -272,6 +322,7 @@ def simulate(req: SimRequest):
             "annual_generation_kwh": round(gen), "solar_coverage_pct": round(100 * onsite / annual, 1),
             "self_consumption_pct": round(100 * onsite / gen, 1) if gen else 0,
             "unserved_kwh": round(sum(r["unserved"] for r in rows)),
+            "stress_unserved_kwh": stress_kwh, "stress_unserved_pct": stress_pct,
             "year1_savings_php": round(y1), "pv_cost_php": round(pv_cost),
             "battery_cost_php": round(bat * req.battery_cost_per_kwh_php), "total_cost_php": round(total),
             "payback_years": round(pay, 1) if pay is not None else None,
